@@ -320,18 +320,95 @@ document.addEventListener("DOMContentLoaded", () => {
     return false;
   }
 
+  // --- Mitarbeiter-Stammdaten: Hilfsfunktionen, Registrierung & Normalisierung ---
+  function registerStaffEntry(rawRes, name) {
+    if (!rawRes || !name) return;
+    const clean = String(rawRes).replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim();
+    if (!clean) return;
+
+    // 1. Exakter String & Kleinschreibung
+    state.staffMap[clean] = name;
+    state.staffMap[clean.toLowerCase()] = name;
+
+    // 2. Ohne float-Endung .0 oder ,0 (Excel)
+    const noFloat = clean.replace(/[,.]0+$/, "");
+    state.staffMap[noFloat] = name;
+    state.staffMap[noFloat.toLowerCase()] = name;
+
+    // 3. Wenn es Ziffern sind (z. B. "45" oder "0045"):
+    // Unpadded und alle gängigen Padding-Längen (1- bis 10-stellig) mappen
+    if (/^\d+$/.test(noFloat)) {
+      const numVal = parseInt(noFloat, 10);
+      const unpadded = String(numVal);
+      state.staffMap[unpadded] = name;
+      for (let len = 1; len <= 10; len++) {
+        const padded = unpadded.padStart(len, "0");
+        state.staffMap[padded] = name;
+      }
+    } else {
+      const digitsMatch = noFloat.match(/\b\d+\b/);
+      if (digitsMatch) {
+        const numVal = parseInt(digitsMatch[0], 10);
+        const unpadded = String(numVal);
+        state.staffMap[unpadded] = name;
+        for (let len = 1; len <= 10; len++) {
+          const padded = unpadded.padStart(len, "0");
+          state.staffMap[padded] = name;
+        }
+      }
+    }
+  }
+
+  function getStaffName(rawRes) {
+    if (rawRes === null || rawRes === undefined) return null;
+    const s = String(rawRes).replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim();
+    if (!s) return null;
+
+    // 1. Direkter Treffer
+    if (state.staffMap[s]) return state.staffMap[s];
+
+    // 2. Ohne .0 oder ,0 Float-Endung
+    const noFloat = s.replace(/[,.]0+$/, "");
+    if (state.staffMap[noFloat]) return state.staffMap[noFloat];
+
+    // 3. Numerischer Abgleich (unpadded und padded 1 bis 10 Stellen)
+    if (/^\d+$/.test(noFloat)) {
+      const numVal = parseInt(noFloat, 10);
+      const unpadded = String(numVal);
+      if (state.staffMap[unpadded]) return state.staffMap[unpadded];
+      for (let len = 1; len <= 10; len++) {
+        const p = unpadded.padStart(len, "0");
+        if (state.staffMap[p]) return state.staffMap[p];
+      }
+    }
+
+    // 4. Case-insensitive
+    if (state.staffMap[s.toLowerCase()]) return state.staffMap[s.toLowerCase()];
+    if (state.staffMap[noFloat.toLowerCase()]) return state.staffMap[noFloat.toLowerCase()];
+
+    // 5. Ziffern-Extraktion falls Präfix (z. B. "Nr. 45" oder "MA-0045")
+    const digitsMatch = noFloat.match(/\b\d+\b/);
+    if (digitsMatch) {
+      const numVal = parseInt(digitsMatch[0], 10);
+      const unpadded = String(numVal);
+      if (state.staffMap[unpadded]) return state.staffMap[unpadded];
+      for (let len = 1; len <= 10; len++) {
+        const p = unpadded.padStart(len, "0");
+        if (state.staffMap[p]) return state.staffMap[p];
+      }
+    }
+
+    return null;
+  }
+
   function applyStaffList(list) {
     state.staffList = list;
     state.staffMap = {};
     list.forEach(item => {
-      const rawRes = String(item.resource || item.res || "").trim();
-      const padded = WebExcelEngine.padNumber(rawRes, 4);
-      const unpadded = rawRes.replace(/^0+/, "");
-      const name = String(item.name || item.mitarbeiter || "").trim();
+      const rawRes = String(item.resource || item.res || "").replace(/\u00a0/g, " ").trim();
+      const name = String(item.name || item.mitarbeiter || "").replace(/\u00a0/g, " ").trim();
       if (rawRes && name) {
-        state.staffMap[padded] = name;
-        state.staffMap[rawRes] = name;
-        if (unpadded) state.staffMap[unpadded] = name;
+        registerStaffEntry(rawRes, name);
       }
     });
     updateStaffUI();
@@ -392,74 +469,121 @@ document.addEventListener("DOMContentLoaded", () => {
         const arrayBuffer = await file.arrayBuffer();
         const wb = new ExcelJS.Workbook();
         await wb.xlsx.load(arrayBuffer);
-        const ws = wb.worksheets[0];
+        const ws = wb.worksheets.find(s => s && (s.rowCount > 0 || s.actualRowCount > 0)) || wb.worksheets[0];
         if (!ws) {
           alert("Die Arbeitsmappe enthält keine Tabellenblätter.");
           return;
         }
 
-        const headerRow = ws.getRow(1);
-        let resColIdx = null;
-        let nameColIdx = null;
-        let firstNameColIdx = null;
-        let lastNameColIdx = null;
-        let deptColIdx = null;
+        const parsedList = [];
+        const seenResKeys = new Set();
 
-        headerRow.eachCell((cell, colNum) => {
-          const text = WebExcelEngine.extractCellValue(cell.value, cell).trim().toLowerCase();
-          if (text.includes("ressource") || text.includes("resource") || text.includes("pers") || text.includes("mitarbeiternr") || text === "id" || text === "nummer" || text === "nr") {
-            if (!resColIdx) resColIdx = colNum;
-          } else if (text === "vorname") {
-            firstNameColIdx = colNum;
-          } else if (text === "nachname") {
-            lastNameColIdx = colNum;
-          } else if (text.includes("name") || text.includes("mitarbeiter") || text.includes("person")) {
-            if (!nameColIdx) nameColIdx = colNum;
-          } else if (text.includes("abteilung") || text.includes("bereich") || text.includes("dept") || text.includes("team")) {
-            deptColIdx = colNum;
+        const addRow = (rawA, rawB, rawC, rowNum) => {
+          let resVal = String(rawA || "").replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim();
+          resVal = resVal.replace(/[,.]0+$/, "");
+          if (!resVal) return;
+
+          let nameVal = String(rawB || "").replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim();
+
+          // Falls Spalte A und B vertauscht sein sollten (A ist Name, B ist Nummer):
+          if (!/^\d+$/.test(resVal) && /^\d+$/.test(nameVal)) {
+            const tmp = resVal;
+            resVal = nameVal;
+            nameVal = tmp;
           }
+
+          if (!nameVal) {
+            nameVal = `Mitarbeiter ${resVal}`;
+          }
+
+          // Zeile 1 nur überspringen, wenn es EINDEUTIG eine Kopfzeile ist (keine Ziffern in A und typische Headerwörter in A und B):
+          if (rowNum === 1) {
+            const aLow = resVal.toLowerCase();
+            const bLow = nameVal.toLowerCase();
+            const isHeadA = ["ressource", "resource", "personal", "mitarbeiter-nr", "personalnummer", "mitarbeiternr", "persnr", "pers-nr", "nummer", "nr"].some(k => aLow === k);
+            const isHeadB = ["name", "mitarbeiter", "person", "vorname", "nachname", "bezeichnung"].some(k => bLow === k);
+            if (!/^\d+$/.test(resVal) && isHeadA && isHeadB) {
+              return; // Kopfzeile überspringen
+            }
+          }
+
+          const dKey = `${resVal}___${nameVal.toLowerCase()}`;
+          if (!seenResKeys.has(dKey)) {
+            seenResKeys.add(dKey);
+            parsedList.push({
+              resource: resVal,
+              name: nameVal,
+              dept: ""
+            });
+          }
+        };
+
+        // 1. Alle Zeilen via eachRow erfassen
+        ws.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+          let cellA = WebExcelEngine.extractCellValue(row.getCell(1).value, row.getCell(1));
+          if (!cellA && row.getCell(1).text) cellA = row.getCell(1).text;
+          if (!cellA && row.getCell(1).model && row.getCell(1).model.value) cellA = row.getCell(1).model.value;
+
+          let cellB = WebExcelEngine.extractCellValue(row.getCell(2).value, row.getCell(2));
+          if (!cellB && row.getCell(2).text) cellB = row.getCell(2).text;
+          if (!cellB && row.getCell(2).model && row.getCell(2).model.value) cellB = row.getCell(2).model.value;
+
+          let cellC = WebExcelEngine.extractCellValue(row.getCell(3).value, row.getCell(3));
+          if (!cellC && row.getCell(3).text) cellC = row.getCell(3).text;
+
+          addRow(cellA, cellB, cellC, rowNumber);
         });
 
-        if (!resColIdx) resColIdx = 1;
-        if (!nameColIdx && !lastNameColIdx) nameColIdx = 2;
-
-        const parsedList = [];
-        for (let r = 2; r <= ws.rowCount; r++) {
+        // 2. Zur Sicherheit auch direkt 1 bis rowCount durchlaufen (falls Zeilen in eachRow ausgelassen wurden)
+        const totalRows = Math.max(ws.rowCount || 0, ws.actualRowCount || 0);
+        for (let r = 1; r <= totalRows; r++) {
           const row = ws.getRow(r);
-          const rawRes = WebExcelEngine.extractCellValue(row.getCell(resColIdx).value, row.getCell(resColIdx)).trim();
-          if (!rawRes) continue;
+          if (!row) continue;
+          let cellA = WebExcelEngine.extractCellValue(row.getCell(1).value, row.getCell(1));
+          if (!cellA && row.getCell(1).text) cellA = row.getCell(1).text;
+          if (!cellA && row.getCell(1).model && row.getCell(1).model.value) cellA = row.getCell(1).model.value;
 
-          let name = "";
-          if (firstNameColIdx && lastNameColIdx) {
-            const fn = WebExcelEngine.extractCellValue(row.getCell(firstNameColIdx).value, row.getCell(firstNameColIdx)).trim();
-            const ln = WebExcelEngine.extractCellValue(row.getCell(lastNameColIdx).value, row.getCell(lastNameColIdx)).trim();
-            name = `${fn} ${ln}`.trim();
-          }
-          if (!name && nameColIdx) {
-            name = WebExcelEngine.extractCellValue(row.getCell(nameColIdx).value, row.getCell(nameColIdx)).trim();
-          }
-          if (!name) name = `Mitarbeiter ${rawRes}`;
+          let cellB = WebExcelEngine.extractCellValue(row.getCell(2).value, row.getCell(2));
+          if (!cellB && row.getCell(2).text) cellB = row.getCell(2).text;
+          if (!cellB && row.getCell(2).model && row.getCell(2).model.value) cellB = row.getCell(2).model.value;
 
-          let dept = "";
-          if (deptColIdx) {
-            dept = WebExcelEngine.extractCellValue(row.getCell(deptColIdx).value, row.getCell(deptColIdx)).trim();
-          }
+          let cellC = WebExcelEngine.extractCellValue(row.getCell(3).value, row.getCell(3));
+          if (!cellC && row.getCell(3).text) cellC = row.getCell(3).text;
 
-          const paddedRes = WebExcelEngine.padNumber(rawRes, 4);
-          parsedList.push({
-            resource: paddedRes,
-            name: name,
-            dept: dept
-          });
+          addRow(cellA, cellB, cellC, r);
         }
 
         if (parsedList.length === 0) {
-          alert("In der Datei wurden keine Mitarbeiter gefunden. Bitte prüfen Sie, ob in Zeile 1 Überschriften wie 'Ressourcennummer' und 'Name' stehen.");
+          alert("In der Datei wurden keine Mitarbeiter gefunden. Bitte stellen Sie sicher, dass in Spalte A die Nummern und in Spalte B die Namen stehen.");
           return;
         }
 
         saveStaffToStorage(parsedList);
         showToast(`✅ ${parsedList.length} Mitarbeiter geladen und dauerhaft im Browser gespeichert!`);
+
+        // Falls Ziel-Datei bereits geladen ist: Spaltenauswahl & Arbeitszeiten & Tabellen sofort neu synchronisieren
+        if (state.targetWorkbook && state.currentTargetSheet) {
+          const wsTarget = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+          if (wsTarget) {
+            const tgtHeaders = [];
+            const headerRow = wsTarget.getRow(1);
+            let colCount = wsTarget.columnCount;
+            headerRow.eachCell((cell, colNum) => { if (colNum > colCount) colCount = colNum; });
+            for (let c = 1; c <= colCount; c++) {
+              const hCell = headerRow.getCell(c);
+              const val = WebExcelEngine.extractCellValue(hCell.value, hCell).trim();
+              tgtHeaders.push({
+                colNum: c,
+                letter: getColLetter(c),
+                name: val || `Spalte ${getColLetter(c)}`
+              });
+            }
+            populateTimesheetColSelects(tgtHeaders);
+          }
+          if (typeof renderTimesheetMatrix === "function") renderTimesheetMatrix();
+          if (typeof populateFullTableFilters === "function") populateFullTableFilters();
+          if (typeof renderFullExcelTable === "function") renderFullExcelTable();
+        }
       } catch (err) {
         console.error(err);
         alert("Fehler beim Lesen der Mitarbeiterdatei: " + err.message);
@@ -1753,12 +1877,49 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // 3. Suche nach Ressourcenspalte
     let bestResCol = null;
-    tgtHeaders.forEach(h => {
-      const lower = h.name.toLowerCase();
-      if (!bestResCol && (lower.includes("ressource") || lower.includes("resource") || lower.includes("pers") || lower.includes("mitarbeiter") || h.letter === "C" || h.colNum === 3)) {
-        bestResCol = h.colNum;
+
+    // Falls Mitarbeiter geladen sind: Prüfe die ersten Zeilen der Ziel-Tabelle auf die meisten Treffer mit Mitarbeiternummern!
+    if (state.staffList && state.staffList.length > 0 && state.targetWorkbook && state.currentTargetSheet) {
+      const ws = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+      if (ws) {
+        const colMatchCounts = {};
+        const maxSampleRows = Math.min(ws.rowCount, 60);
+        for (let r = 2; r <= maxSampleRows; r++) {
+          const sampleRow = ws.getRow(r);
+          tgtHeaders.forEach(h => {
+            const val = WebExcelEngine.extractCellValue(sampleRow.getCell(h.colNum).value, sampleRow.getCell(h.colNum));
+            if (val && getStaffName(val)) {
+              colMatchCounts[h.colNum] = (colMatchCounts[h.colNum] || 0) + 1;
+            }
+          });
+        }
+        let maxMatches = 0;
+        let matchedColNum = null;
+        for (const [colNumStr, count] of Object.entries(colMatchCounts)) {
+          if (count > maxMatches) {
+            maxMatches = count;
+            matchedColNum = parseInt(colNumStr, 10);
+          }
+        }
+        if (maxMatches >= 1) {
+          bestResCol = matchedColNum;
+        }
       }
-    });
+    }
+
+    if (!bestResCol) {
+      tgtHeaders.forEach(h => {
+        const lower = h.name.toLowerCase();
+        if (!bestResCol && (
+          lower.includes("ressource") || lower.includes("resource") || lower.includes("pers") ||
+          lower.includes("mitarbeiter") || lower.includes("monteur") || lower.includes("techniker") ||
+          lower.includes("arbeiter") || lower.includes("personal") || lower.includes("manr") ||
+          lower.includes("kollege") || h.letter === "C" || h.colNum === 3
+        )) {
+          bestResCol = h.colNum;
+        }
+      });
+    }
     if (!bestResCol) {
       const colC = tgtHeaders.find(h => h.letter === "C" || h.colNum === 3);
       if (colC) bestResCol = colC.colNum;
@@ -1948,16 +2109,14 @@ document.addEventListener("DOMContentLoaded", () => {
       // 1. Ressource ermitteln (inklusive etwaiger Benutzer-Korrekturen)
       const cellKey = `${r}_${resColIdx}`;
       let rawRes = (state.appliedCorrections && state.appliedCorrections[cellKey] !== undefined)
-        ? String(state.appliedCorrections[cellKey]).trim()
-        : WebExcelEngine.extractCellValue(row.getCell(resColIdx).value, row.getCell(resColIdx)).trim();
+        ? String(state.appliedCorrections[cellKey]).replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim()
+        : WebExcelEngine.extractCellValue(row.getCell(resColIdx).value, row.getCell(resColIdx)).replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim();
+      rawRes = rawRes.replace(/[,.]0+$/, "");
 
       if (!rawRes) continue; // Zeilen ohne Ressourcennummer überspringen
 
-      const paddedRes = WebExcelEngine.padNumber(rawRes, 4);
-      const unpaddedRes = rawRes.replace(/^0+/, "");
-
       // Mitarbeiter-Name aus Stammdaten ermitteln
-      const empNameFromMap = state.staffMap[paddedRes] || state.staffMap[unpaddedRes] || state.staffMap[rawRes];
+      const empNameFromMap = getStaffName(rawRes);
       const isKnownWorker = Boolean(empNameFromMap);
 
       // WICHTIG: Wenn Mitarbeiterdatei hinterlegt ist und Filter aktiv ist,
@@ -1968,7 +2127,9 @@ document.addEventListener("DOMContentLoaded", () => {
         continue;
       }
 
-      const empName = empNameFromMap || `Ressource ${paddedRes}`;
+      const paddedRes = (/^\d+$/.test(rawRes) && rawRes.length < 4) ? WebExcelEngine.padNumber(rawRes, 4) : rawRes;
+      const displayRes = paddedRes;
+      const empName = empNameFromMap || `Ressource ${displayRes}`;
       const hasCustomName = Boolean(empNameFromMap);
 
       // 2. Datum ermitteln
@@ -2003,10 +2164,11 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       dateMap.get(dateObj.isoKey).totalHours += hours;
 
-      // Mitarbeiter aggregieren
-      if (!empMap.has(paddedRes)) {
-        empMap.set(paddedRes, {
-          resource: paddedRes,
+      // Mitarbeiter aggregieren (Eindeutiger Schlüssel: empName falls bekannt, sonst displayRes)
+      const empKey = isKnownWorker ? empName : displayRes;
+      if (!empMap.has(empKey)) {
+        empMap.set(empKey, {
+          resource: displayRes,
           name: empName,
           hasCustomName: hasCustomName,
           hoursByDate: {},
@@ -2014,7 +2176,7 @@ document.addEventListener("DOMContentLoaded", () => {
           totalEntries: 0
         });
       }
-      const empRecord = empMap.get(paddedRes);
+      const empRecord = empMap.get(empKey);
       empRecord.hoursByDate[dateObj.isoKey] = (empRecord.hoursByDate[dateObj.isoKey] || 0) + hours;
       empRecord.totalHours += hours;
       empRecord.totalEntries += 1;
@@ -2395,13 +2557,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
       // Ressource
       const cellKeyRes = `${r}_${resColIdx}`;
-      const rawRes = (state.appliedCorrections && state.appliedCorrections[cellKeyRes] !== undefined)
-        ? String(state.appliedCorrections[cellKeyRes]).trim()
-        : WebExcelEngine.extractCellValue(row.getCell(resColIdx).value, row.getCell(resColIdx)).trim();
+      let rawRes = (state.appliedCorrections && state.appliedCorrections[cellKeyRes] !== undefined)
+        ? String(state.appliedCorrections[cellKeyRes]).replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim()
+        : WebExcelEngine.extractCellValue(row.getCell(resColIdx).value, row.getCell(resColIdx)).replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim();
+      rawRes = rawRes.replace(/[,.]0+$/, "");
 
       if (rawRes) {
-        const padded = WebExcelEngine.padNumber(rawRes, 4);
-        staffCounts.set(padded, (staffCounts.get(padded) || 0) + 1);
+        const key = (/^\d+$/.test(rawRes) && rawRes.length < 4) ? WebExcelEngine.padNumber(rawRes, 4) : rawRes;
+        staffCounts.set(key, (staffCounts.get(key) || 0) + 1);
       }
 
       // Datum
@@ -2425,7 +2588,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const nonWorkerKeys = [];
 
     Array.from(staffCounts.keys()).sort().forEach(res => {
-      const isKnownWorker = Boolean(state.staffMap[res] || state.staffMap[res.replace(/^0+/, "")]);
+      const isKnownWorker = Boolean(getStaffName(res));
       if (hasStaffList) {
         if (isKnownWorker) workerKeys.push(res);
         else nonWorkerKeys.push(res);
@@ -2453,7 +2616,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const groupWorkers = document.createElement("optgroup");
       groupWorkers.label = "👷 Arbeiter (aus Stammdaten)";
       workerKeys.forEach(res => {
-        const name = state.staffMap[res] || state.staffMap[res.replace(/^0+/, "")] || `Arbeiter ${res}`;
+        const name = getStaffName(res) || `Arbeiter ${res}`;
         const count = staffCounts.get(res);
         const opt = document.createElement("option");
         opt.value = res;
@@ -2476,7 +2639,7 @@ document.addEventListener("DOMContentLoaded", () => {
       filterFullStaff.appendChild(groupNonWorkers);
     } else {
       workerKeys.forEach(res => {
-        const name = state.staffMap[res] || `Ressource ${res}`;
+        const name = getStaffName(res) || `Ressource ${res}`;
         const count = staffCounts.get(res);
         const opt = document.createElement("option");
         opt.value = res;
@@ -2552,19 +2715,26 @@ document.addEventListener("DOMContentLoaded", () => {
 
       // Mitarbeiter-Filter prüfen
       const cellKeyRes = `${r}_${resColIdx}`;
-      const rawRes = (state.appliedCorrections && state.appliedCorrections[cellKeyRes] !== undefined)
-        ? String(state.appliedCorrections[cellKeyRes]).trim()
-        : WebExcelEngine.extractCellValue(row.getCell(resColIdx).value, row.getCell(resColIdx)).trim();
-      const paddedRes = WebExcelEngine.padNumber(rawRes, 4);
+      let rawRes = (state.appliedCorrections && state.appliedCorrections[cellKeyRes] !== undefined)
+        ? String(state.appliedCorrections[cellKeyRes]).replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim()
+        : WebExcelEngine.extractCellValue(row.getCell(resColIdx).value, row.getCell(resColIdx)).replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim();
+      rawRes = rawRes.replace(/[,.]0+$/, "");
+      const paddedRes = (/^\d+$/.test(rawRes) && rawRes.length < 4) ? WebExcelEngine.padNumber(rawRes, 4) : rawRes;
       const unpaddedRes = rawRes.replace(/^0+/, "");
-      const isKnownWorker = Boolean(state.staffMap[paddedRes] || state.staffMap[unpaddedRes] || state.staffMap[rawRes]);
+      const empName = getStaffName(rawRes);
+      const isKnownWorker = Boolean(empName);
 
       if (staffFilter === "all_staff") {
         if (!isKnownWorker) continue;
       } else if (staffFilter === "all_non_staff") {
         if (isKnownWorker) continue;
-      } else if (staffFilter !== "all" && paddedRes !== staffFilter && rawRes !== staffFilter && unpaddedRes !== staffFilter) {
-        continue;
+      } else if (staffFilter !== "all") {
+        const filterName = getStaffName(staffFilter);
+        const matchesStaff = Boolean(empName && filterName && empName === filterName);
+        const matchesKey = (rawRes === staffFilter || paddedRes === staffFilter || unpaddedRes === staffFilter);
+        if (!matchesStaff && !matchesKey) {
+          continue;
+        }
       }
 
       // Datums-Filter prüfen
@@ -2598,7 +2768,7 @@ document.addEventListener("DOMContentLoaded", () => {
         rowTextAcc += " " + String(val).toLowerCase();
       }
 
-      const empNameForSearch = state.staffMap[paddedRes] || "";
+      const empNameForSearch = empName || "";
       if (empNameForSearch) rowTextAcc += " " + empNameForSearch.toLowerCase();
 
       if (statusFilter === "errors" && !rowHasError) continue;
@@ -2775,7 +2945,7 @@ document.addEventListener("DOMContentLoaded", () => {
       fullTableEl.scrollIntoView({ behavior: "smooth" });
     }
 
-    const empName = state.staffMap[resource] || `Ressource ${resource}`;
+    const empName = getStaffName(resource) || `Ressource ${resource}`;
     showToast(`🔍 Zeige alle Zeilen für ${empName} ${dateIso ? 'am ' + dateIso : ''}. Klicken Sie auf eine Zelle zum Ändern.`);
   }
 
