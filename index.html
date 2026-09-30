@@ -414,7 +414,10 @@
               Automatische Zusammenstellung der gebuchten Zeiten pro Mitarbeiter und Kalendertag zur Endkontrolle, ob alle Daten korrekt erfasst wurden.
             </p>
           </div>
-          <div class="timesheet-header-actions">
+          <div class="timesheet-header-actions" style="display: flex; gap: 0.5rem; align-items: center;">
+            <button type="button" id="btn-open-insert-row-timesheet" class="btn btn-primary btn-sm" style="background: #0284c7; border-color: #0284c7;" title="Fehlende Zeile / Buchung für einen Mitarbeiter in die Prüfdatei nachtragen">
+              <span class="icon">➕</span> Zeile nachtragen
+            </button>
             <button id="btn-export-timesheet" class="btn btn-success btn-sm" title="Lädt diese Arbeitszeiten-Matrix als formatierte Excel-Datei herunter">
               <span class="icon">📥</span> Arbeitszeiten als Excel (.xlsx)
             </button>
@@ -466,15 +469,15 @@
 
   </main>
 
-  <!-- Modal: Neue Zeile in Prüfdatei nachtragen -->
+  <!-- Modal: Zeile nachtragen (Neu anlegen) ODER Zeile bearbeiten -->
   <div id="modal-insert-row" class="modal-backdrop hidden">
     <div class="modal-dialog">
       <div class="modal-header">
         <div style="display: flex; align-items: center; gap: 0.6rem;">
-          <span style="font-size: 1.4rem;">➕</span>
+          <span id="modal-icon" style="font-size: 1.4rem;">➕</span>
           <div>
-            <h3 class="modal-title">Zeile in Prüfdatei nachtragen</h3>
-            <p style="font-size: 0.8rem; color: var(--text-muted); margin: 0;">Fügt eine fehlende Zeile mit korrekter Formatierung an die richtige Stelle der Datei ein.</p>
+            <h3 id="modal-title" class="modal-title">Zeile in Prüfdatei nachtragen</h3>
+            <p id="modal-desc" style="font-size: 0.8rem; color: var(--text-muted); margin: 0;">Fügt eine fehlende Zeile mit korrekter Formatierung an die richtige Stelle der Datei ein.</p>
           </div>
         </div>
         <button type="button" id="btn-close-insert-modal" class="modal-close-btn" title="Schließen">&times;</button>
@@ -482,56 +485,65 @@
 
       <div class="modal-body">
         
-        <!-- Bereich 1: Positionierung -->
-        <div class="modal-section">
-          <div class="modal-section-title">
-            <span>📍</span> <strong>Einfüge-Position in der Datei festlegen</strong>
-          </div>
+        <!-- Bearbeitungs-Hinweis (nur im Edit-Modus aktiv) -->
+        <div id="modal-edit-banner" class="hidden" style="margin-bottom: 0.85rem; background: #fef3c7; border: 1px solid #fde68a; border-radius: 6px; padding: 0.65rem 0.9rem; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap;">
+          <span style="font-size: 0.85rem; color: #92400e;">✏️ <strong>Bestehende Zeile bearbeiten:</strong> Sie ändern direkt den Datensatz in <strong id="modal-edit-row-num">Zeile 1</strong>.</span>
+          <button type="button" id="btn-switch-to-insert" class="btn btn-secondary btn-sm" style="font-size: 0.75rem; padding: 3px 8px;">➕ Stattdessen neue Zeile nachtragen</button>
+        </div>
 
-          <div class="insert-pos-modes">
-            <label class="radio-chip">
-              <input type="radio" name="insert-pos-mode" value="auto" checked>
-              <span>🧭 Automatisch passend einsortieren (nach Datum &amp; Mitarbeiter)</span>
-            </label>
-            <label class="radio-chip">
-              <input type="radio" name="insert-pos-mode" value="after_row">
-              <span>🎯 Direkt nach einer bestimmten Zeile einfügen</span>
-            </label>
-            <label class="radio-chip">
-              <input type="radio" name="insert-pos-mode" value="end">
-              <span>⬇️ Am Dateiende anhängen</span>
-            </label>
-          </div>
-
-          <!-- Selektor für Modus "after_row" -->
-          <div id="insert-after-row-container" class="insert-after-row-box hidden" style="margin-top: 0.75rem;">
-            <div style="display: flex; gap: 0.5rem; margin-bottom: 0.4rem; align-items: center;">
-              <input type="text" id="insert-row-search" class="form-input form-input-sm" placeholder="🔍 Nach Zeile, Datum, Auftrag oder Mitarbeiter filtern..." style="flex: 1;">
-              <span id="insert-row-match-count" style="font-size: 0.78rem; color: var(--text-muted); white-space: nowrap;"></span>
+        <!-- Bereiche nur für Neu-Einfügen (im Edit-Modus ausgeblendet) -->
+        <div id="modal-insert-only-sections">
+          <!-- Bereich 1: Positionierung -->
+          <div class="modal-section">
+            <div class="modal-section-title">
+              <span>📍</span> <strong>Einfüge-Position in der Datei festlegen</strong>
             </div>
-            <select id="insert-target-row-select" class="form-select form-select-sm" size="5" style="width: 100%; height: 110px; font-family: monospace; font-size: 0.82rem;"></select>
-            <p style="font-size: 0.78rem; color: var(--text-muted); margin-top: 4px;">
-              💡 Die neue Zeile wird direkt unter die hier gewählte Zeile eingefügt.
-            </p>
+
+            <div class="insert-pos-modes">
+              <label class="radio-chip">
+                <input type="radio" name="insert-pos-mode" value="auto" checked>
+                <span>🧭 Automatisch passend einsortieren (nach Datum &amp; Mitarbeiter)</span>
+              </label>
+              <label class="radio-chip">
+                <input type="radio" name="insert-pos-mode" value="after_row">
+                <span>🎯 Direkt nach einer bestimmten Zeile einfügen</span>
+              </label>
+              <label class="radio-chip">
+                <input type="radio" name="insert-pos-mode" value="end">
+                <span>⬇️ Am Dateiende anhängen</span>
+              </label>
+            </div>
+
+            <!-- Selektor für Modus "after_row" -->
+            <div id="insert-after-row-container" class="insert-after-row-box hidden" style="margin-top: 0.75rem;">
+              <div style="display: flex; gap: 0.5rem; margin-bottom: 0.4rem; align-items: center;">
+                <input type="text" id="insert-row-search" class="form-input form-input-sm" placeholder="🔍 Nach Zeile, Datum, Auftrag oder Mitarbeiter filtern..." style="flex: 1;">
+                <span id="insert-row-match-count" style="font-size: 0.78rem; color: var(--text-muted); white-space: nowrap;"></span>
+              </div>
+              <select id="insert-target-row-select" class="form-select form-select-sm" size="5" style="width: 100%; height: 110px; font-family: monospace; font-size: 0.82rem;"></select>
+              <p style="font-size: 0.78rem; color: var(--text-muted); margin-top: 4px;">
+                💡 Die neue Zeile wird direkt unter die hier gewählte Zeile eingefügt.
+              </p>
+            </div>
+
+            <div id="insert-auto-hint" style="font-size: 0.8rem; color: #0284c7; margin-top: 0.5rem; background: #f0f9ff; padding: 6px 10px; border-radius: 4px; border: 1px solid #bae6fd;">
+              ℹ️ <strong>Auto-Modus:</strong> Das System sucht automatisch die richtige Stelle (passend zu Datum und Mitarbeiter) und fügt die Zeile sauber chronologisch ein.
+            </div>
           </div>
 
-          <div id="insert-auto-hint" style="font-size: 0.8rem; color: #0284c7; margin-top: 0.5rem; background: #f0f9ff; padding: 6px 10px; border-radius: 4px; border: 1px solid #bae6fd;">
-            ℹ️ <strong>Auto-Modus:</strong> Das System sucht automatisch die richtige Stelle (passend zu Datum und Mitarbeiter) und fügt die Zeile sauber chronologisch ein.
+          <!-- Bereich 2: Vorlage kopieren (optional) -->
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; background: #ffffff; padding: 0.65rem 0.85rem; border: 1px dashed var(--border); border-radius: var(--radius-sm); flex-wrap: wrap; margin-bottom: 1rem;">
+            <span style="font-size: 0.82rem; color: var(--text-muted);">📋 Optional: Werte aus bestehender Zeile als Vorlage übernehmen:</span>
+            <select id="insert-template-row-select" class="form-select form-select-sm" style="max-width: 320px;">
+              <option value="">-- Leere Zeile ausfüllen --</option>
+            </select>
           </div>
         </div>
 
-        <!-- Bereich 2: Vorlage kopieren (optional) -->
-        <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; background: #ffffff; padding: 0.65rem 0.85rem; border: 1px dashed var(--border); border-radius: var(--radius-sm); flex-wrap: wrap;">
-          <span style="font-size: 0.82rem; color: var(--text-muted);">📋 Optional: Werte aus bestehender Zeile als Vorlage übernehmen:</span>
-          <select id="insert-template-row-select" class="form-select form-select-sm" style="max-width: 320px;">
-            <option value="">-- Leere Zeile ausfüllen --</option>
-          </select>
-        </div>
-
-        <!-- Bereich 3: Spalten-Eingabefelder -->
+        <!-- Bereich 3: Spalten-Eingabefelder (für Insert & Edit genutzt) -->
         <div class="modal-section">
           <div class="modal-section-title">
-            <span>📝</span> <strong>Werte der neuen Zeile eingeben</strong>
+            <span>📝</span> <strong id="modal-fields-title">Werte der Zeile eingeben</strong>
           </div>
           <div id="insert-fields-grid" class="fields-grid">
             <!-- Dynamisch für jede Spalte der Datei generiert -->
@@ -543,8 +555,38 @@
       <div class="modal-footer">
         <button type="button" id="btn-cancel-insert-row" class="btn btn-secondary">Abbrechen</button>
         <button type="button" id="btn-confirm-insert-row" class="btn btn-primary" style="background: #059669; border-color: #047857;">
-          <span class="icon">➕</span> Zeile jetzt einfügen
+          <span class="icon" id="btn-confirm-icon">➕</span> <span id="btn-confirm-insert-text">Zeile jetzt einfügen</span>
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Buchung auswählen (wenn mehrere Buchungen an einem Tag existieren) -->
+  <div id="modal-choose-booking" class="modal-backdrop hidden">
+    <div class="modal-dialog" style="max-width: 580px;">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 0.6rem;">
+          <span style="font-size: 1.4rem;">📋</span>
+          <div>
+            <h3 class="modal-title" id="choose-booking-title">Buchung auswählen</h3>
+            <p id="choose-booking-subtitle" style="font-size: 0.8rem; color: var(--text-muted); margin: 0;"></p>
+          </div>
+        </div>
+        <button type="button" id="btn-close-choose-modal" class="modal-close-btn" title="Schließen">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 0.88rem; color: #334155; margin-bottom: 0.75rem;">
+          Wählen Sie die Zeile aus, die Sie bearbeiten möchten, oder tragen Sie eine neue Buchung ein:
+        </p>
+        <div id="choose-booking-list" style="display: flex; flex-direction: column; gap: 0.5rem; max-height: 50vh; overflow-y: auto;">
+          <!-- Dynamisch generiert -->
+        </div>
+      </div>
+      <div class="modal-footer" style="justify-content: space-between;">
+        <button type="button" id="btn-choose-add-new" class="btn btn-primary btn-sm" style="background: #0284c7; border-color: #0284c7;">
+          ➕ Neue zusätzliche Zeile eintragen
+        </button>
+        <button type="button" id="btn-close-choose" class="btn btn-secondary btn-sm">Abbrechen</button>
       </div>
     </div>
   </div>
