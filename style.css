@@ -1480,6 +1480,23 @@ body {
   text-decoration: underline;
 }
 
+/* Sanfte visuelle Hervorhebung der bearbeiteten / nachgetragenen Mitarbeiterzeile */
+.ts-row-highlight td {
+  animation: tsRowHighlightPulse 3s ease-out forwards;
+}
+
+@keyframes tsRowHighlightPulse {
+  0% {
+    background-color: #a7f3d0 !important;
+  }
+  35% {
+    background-color: #d1fae5 !important;
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
 /* ==============================================================================
    Modal: Zeile nachtragen / Dialog-Fenster
    ============================================================================== */

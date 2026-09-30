@@ -35,7 +35,9 @@ document.addEventListener("DOMContentLoaded", () => {
     lastInsertedRow: null,
     modalRowMode: "insert", // "insert" oder "edit"
     modalEditRowIdx: null,
-    modalPrefill: null
+    modalPrefill: null,
+    modalCaller: "timesheet",
+    highlightEmployeeRes: null
   };
 
   // DOM Elemente
@@ -1276,7 +1278,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }, 50);
   });
 
-  function runInspection() {
+  function runInspection(options = {}) {
     const refWs = state.refWorkbook.getWorksheet(state.currentRefSheet);
     const tgtWs = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
 
@@ -1696,8 +1698,12 @@ document.addEventListener("DOMContentLoaded", () => {
     renderFullExcelTable();
 
     resultsSection.classList.remove("hidden");
-    resultsSection.scrollIntoView({ behavior: "smooth" });
-    showToast(`Prüfung abgeschlossen: ${stats.total_errors} Abweichungen gefunden.`);
+    if (!options.skipScroll) {
+      resultsSection.scrollIntoView({ behavior: "smooth" });
+    }
+    if (!options.skipToast) {
+      showToast(`Prüfung abgeschlossen: ${stats.total_errors} Abweichungen gefunden.`);
+    }
   }
 
   // --- Statistiken aktualisieren ---
@@ -2607,8 +2613,14 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       }).join("");
 
+      const isTargetEmp = Boolean(state.highlightEmployeeRes && (
+        emp.resource === state.highlightEmployeeRes ||
+        (/^\d+$/.test(emp.resource) && /^\d+$/.test(state.highlightEmployeeRes) && parseInt(emp.resource, 10) === parseInt(state.highlightEmployeeRes, 10))
+      ));
+      const rowClass = isTargetEmp ? "ts-row-highlight" : "";
+
       return `
-        <tr>
+        <tr class="${rowClass}">
           <td class="ts-cell-emp">
             <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
               <span class="ts-emp-clickable" data-res="${escapeHtml(emp.resource)}" style="font-weight: 600; color: #1e293b;" title="🔍 Klicken, um alle Zeilen von ${escapeHtml(emp.name)} in der Gesamttabelle anzuzeigen">${escapeHtml(emp.name)}</span>
@@ -2621,6 +2633,12 @@ document.addEventListener("DOMContentLoaded", () => {
         </tr>
       `;
     }).join("");
+
+    if (state.highlightEmployeeRes) {
+      setTimeout(() => {
+        state.highlightEmployeeRes = null;
+      }, 3000);
+    }
 
     // TFOOT
     timesheetTfoot.innerHTML = `
@@ -2638,6 +2656,7 @@ document.addEventListener("DOMContentLoaded", () => {
     timesheetTbody.querySelectorAll(".ts-hour-clickable").forEach(el => {
       el.addEventListener("click", (e) => {
         e.stopPropagation();
+        state.modalCaller = "timesheet";
         const res = el.dataset.res;
         const dateIso = el.dataset.date;
         const matchingRows = findRowsForResourceAndDate(res, dateIso);
@@ -2656,6 +2675,7 @@ document.addEventListener("DOMContentLoaded", () => {
     timesheetTbody.querySelectorAll(".ts-hour-empty-clickable").forEach(el => {
       el.addEventListener("click", (e) => {
         e.stopPropagation();
+        state.modalCaller = "timesheet";
         const res = el.dataset.res;
         const dateIso = el.dataset.date;
         openInsertRowModal(null, { res: res, dateIso: dateIso });
@@ -3222,6 +3242,7 @@ document.addEventListener("DOMContentLoaded", () => {
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
         const rIdx = parseInt(btn.dataset.row, 10);
+        state.modalCaller = "fulltable";
         openInsertRowModal(rIdx);
       });
     });
@@ -3579,6 +3600,7 @@ document.addEventListener("DOMContentLoaded", () => {
     chooseBookingList.querySelectorAll(".btn-edit-specific-row").forEach(btn => {
       btn.addEventListener("click", () => {
         const rIdx = parseInt(btn.dataset.row, 10);
+        state.modalCaller = "timesheet";
         closeChooseBookingModal();
         openEditRowModal(rIdx);
       });
@@ -3586,6 +3608,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (btnChooseAddNew) {
       btnChooseAddNew.onclick = () => {
+        state.modalCaller = "timesheet";
         closeChooseBookingModal();
         openInsertRowModal(null, { res: resource, dateIso: dateIso });
       };
@@ -3819,6 +3842,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       if (btnSwitchToInsert) {
         btnSwitchToInsert.onclick = () => {
+          state.modalCaller = "timesheet";
           openInsertRowModal(null, { res: curRes, dateIso: curDateIso });
         };
       }
@@ -4071,6 +4095,8 @@ document.addEventListener("DOMContentLoaded", () => {
       if (colCount === 0 && ws.actualColumnCount) colCount = ws.actualColumnCount;
       if (colCount === 0) colCount = 10;
 
+      let savedRes = "";
+
       for (let c = 1; c <= colCount; c++) {
         const inputEl = document.getElementById(`modal-field-${c}`);
         let val = inputEl ? inputEl.value.trim() : "";
@@ -4107,6 +4133,7 @@ document.addEventListener("DOMContentLoaded", () => {
           cell.value = cleanRes;
           cell.alignment = { horizontal: "center", vertical: "middle" };
           state.appliedCorrections[cellKey] = cleanRes;
+          savedRes = cleanRes;
         } else if (c === hoursColIdx) {
           if (val !== "") {
             const num = parseFloat(val.replace(",", "."));
@@ -4135,13 +4162,23 @@ document.addEventListener("DOMContentLoaded", () => {
 
       closeInsertRowModal();
 
-      // UI & Analyse aktualisieren
-      runInspection();
-      populateFullTableFilters();
-      renderFullExcelTable();
-      if (typeof renderTimesheetMatrix === "function") renderTimesheetMatrix();
+      // Mitarbeiter für sanftes Hervorheben in der Wochentabelle merken
+      if (savedRes) state.highlightEmployeeRes = savedRes;
+
+      // UI & Analyse aktualisieren (OHNE Scrollen nach oben und ohne Toast-Überschreibung!)
+      runInspection({ skipScroll: true, skipToast: true });
 
       showToast(`✅ Änderungen für Zeile ${rowIdx} erfolgreich in Prüfdatei gespeichert!`);
+
+      // Wenn aus der Wochentabelle aufgerufen: Wochentabelle direkt wieder im Blick behalten
+      if (state.modalCaller === "timesheet") {
+        setTimeout(() => {
+          const tsSec = document.getElementById("timesheet-section");
+          if (tsSec) {
+            tsSec.scrollIntoView({ behavior: "smooth", block: "start" });
+          }
+        }, 50);
+      }
     } catch (err) {
       console.error("Fehler beim Speichern der bearbeiteten Zeile:", err);
       alert("Fehler beim Speichern der Zeile: " + err.message);
@@ -4300,12 +4337,24 @@ document.addEventListener("DOMContentLoaded", () => {
 
       // 6. Neu analysieren & UI aktualisieren
       state.lastInsertedRow = insertAtRowIndex;
-      runInspection();
-      populateFullTableFilters();
-      renderFullExcelTable();
-      if (typeof renderTimesheetMatrix === "function") renderTimesheetMatrix();
+      if (enteredRes) state.highlightEmployeeRes = enteredRes;
+
+      // UI & Analyse aktualisieren (OHNE Scrollen nach oben und ohne Toast-Überschreibung!)
+      runInspection({ skipScroll: true, skipToast: true });
 
       showToast(`✅ Zeile erfolgreich an Position ${insertAtRowIndex} in Prüfdatei eingefügt!`);
+
+      // Wenn aus der Wochentabelle aufgerufen: Wochentabelle direkt wieder im Blick behalten
+      if (state.modalCaller === "timesheet") {
+        setTimeout(() => {
+          const tsSec = document.getElementById("timesheet-section");
+          if (tsSec) {
+            tsSec.scrollIntoView({ behavior: "smooth", block: "start" });
+          }
+        }, 50);
+      } else if (state.modalCaller === "fulltable") {
+        activateTab("fulltable");
+      }
     } catch (err) {
       console.error("Fehler beim Einfügen der Zeile:", err);
       alert("Fehler beim Einfügen der Zeile: " + err.message);
@@ -4330,13 +4379,22 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
   if (btnOpenInsertRowActionbar) {
-    btnOpenInsertRowActionbar.addEventListener("click", () => openInsertRowModal(null));
+    btnOpenInsertRowActionbar.addEventListener("click", () => {
+      state.modalCaller = "timesheet";
+      openInsertRowModal(null);
+    });
   }
   if (btnOpenInsertRowFulltable) {
-    btnOpenInsertRowFulltable.addEventListener("click", () => openInsertRowModal(null));
+    btnOpenInsertRowFulltable.addEventListener("click", () => {
+      state.modalCaller = "fulltable";
+      openInsertRowModal(null);
+    });
   }
   if (btnOpenInsertRowTimesheet) {
-    btnOpenInsertRowTimesheet.addEventListener("click", () => openInsertRowModal(null));
+    btnOpenInsertRowTimesheet.addEventListener("click", () => {
+      state.modalCaller = "timesheet";
+      openInsertRowModal(null);
+    });
   }
 
   // Event Listeners für Buchung-Auswählen Modal
