@@ -3,6 +3,18 @@
 // ==============================================================================
 
 document.addEventListener("DOMContentLoaded", () => {
+  // --- Globaler Drag & Drop Schutz ---
+  // Verhindert, dass Chrome/Edge bei Drag & Drop (oder versehentlichem Danebenwerfen)
+  // die Datei im Windows-Download-Ordner ablegt oder die Webseite verlässt.
+  ["dragenter", "dragover", "dragleave", "drop"].forEach((eventName) => {
+    window.addEventListener(eventName, (e) => {
+      e.preventDefault();
+    }, false);
+    document.addEventListener(eventName, (e) => {
+      e.preventDefault();
+    }, false);
+  });
+
   // App-Zustand im Arbeitsspeicher
   const state = {
     refWorkbook: null,
@@ -282,7 +294,12 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     } catch (err) {
       console.error(err);
-      alert("Fehler beim Laden der Referenzdatei: " + err.message);
+      const isOldXls = file.name.toLowerCase().endsWith(".xls") && !file.name.toLowerCase().endsWith(".xlsx");
+      if (isOldXls) {
+        alert(`Die Datei "${file.name}" liegt im alten Excel 97-2003-Format (.xls) vor.\n\nBitte öffnen Sie die Datei kurz in Excel und speichern Sie sie über "Datei > Speichern unter" als "Excel-Arbeitsmappe (.xlsx)" ab.`);
+      } else {
+        alert("Fehler beim Laden der Referenzdatei: " + err.message);
+      }
     }
   });
 
@@ -311,7 +328,12 @@ document.addEventListener("DOMContentLoaded", () => {
       showToast(`Prüfdatei "${file.name}" geladen.`);
     } catch (err) {
       console.error(err);
-      alert("Fehler beim Laden der Prüfdatei: " + err.message);
+      const isOldXls = file.name.toLowerCase().endsWith(".xls") && !file.name.toLowerCase().endsWith(".xlsx");
+      if (isOldXls) {
+        alert(`Die Datei "${file.name}" liegt im alten Excel 97-2003-Format (.xls) vor.\n\nBitte öffnen Sie die Datei kurz in Excel und speichern Sie sie über "Datei > Speichern unter" als "Excel-Arbeitsmappe (.xlsx)" ab.`);
+      } else {
+        alert("Fehler beim Laden der Prüfdatei: " + err.message);
+      }
     }
   });
 
@@ -611,81 +633,115 @@ document.addEventListener("DOMContentLoaded", () => {
         };
 
         const isCsv = file.name.toLowerCase().endsWith(".csv") || file.name.toLowerCase().endsWith(".txt");
-        if (isCsv) {
-          const text = await file.text();
-          const lines = text.split(/\r?\n/);
-          for (let l = 0; l < lines.length; l++) {
-            const line = lines[l].trim();
-            if (!line) continue;
-            let parts = line.split(";");
-            if (parts.length < 2) parts = line.split(",");
-            if (parts.length < 2) parts = line.split("\t");
-            if (parts.length >= 2) {
-              let pA = parts[0];
-              let pB = parts[1];
-              let pC = parts.length > 2 ? parts[2] : "";
-              if (pC && !/^\d+$/.test(pC.trim()) && !/^\d+$/.test(pB.trim())) {
-                pB = `${pB.trim()} ${pC.trim()}`;
+        let loadedViaExcelJS = false;
+
+        if (!isCsv) {
+          try {
+            const arrayBuffer = await file.arrayBuffer();
+            const wb = new ExcelJS.Workbook();
+            await wb.xlsx.load(arrayBuffer);
+
+            wb.worksheets.forEach(ws => {
+              if (!ws) return;
+              const maxR = Math.max(
+                ws.rowCount || 0,
+                ws.actualRowCount || 0,
+                (ws._rows ? ws._rows.length : 0),
+                100
+              );
+
+              let emptyCount = 0;
+              for (let r = 1; r <= maxR; r++) {
+                const row = ws.getRow(r);
+                if (!row) {
+                  emptyCount++;
+                  if (emptyCount > 60 && r > 20) break;
+                  continue;
+                }
+
+                let cellA = getCleanCellValue(row.getCell(1));
+                let cellB = getCleanCellValue(row.getCell(2));
+                let cellC = getCleanCellValue(row.getCell(3));
+                let cellD = getCleanCellValue(row.getCell(4));
+
+                if (!cellA && !cellB && !cellC && !cellD) {
+                  emptyCount++;
+                  if (emptyCount > 60 && r > 20) break;
+                  continue;
+                }
+                emptyCount = 0;
+
+                // Fall 1: Spalte A = Nummer, Spalte B = Name
+                // Fall 2: Spalte A = Nummer, Spalte B = Vorname, Spalte C = Nachname
+                if (/^\d+/.test(cellA) && cellB && cellC && !/^\d+/.test(cellB) && !/^\d+/.test(cellC)) {
+                  addStaffItem(cellA, `${cellB} ${cellC}`, ws.name);
+                }
+                // Fall 3: Spalte A = laufende ID (1,2,3...), Spalte B = Personalnummer (z. B. 1773), Spalte C = Name
+                else if (/^\d+$/.test(cellA) && cellA.length <= 2 && /^\d+$/.test(cellB) && cellB.length >= 3 && cellC) {
+                  addStaffItem(cellB, cellC, ws.name);
+                }
+                // Fall 4: Standard Spalte A und B
+                else if (cellA || cellB) {
+                  addStaffItem(cellA, cellB, ws.name);
+                }
               }
-              addStaffItem(pA, pB, "");
-            } else {
-              addStaffItem(parts[0], "", "");
-            }
+            });
+            loadedViaExcelJS = true;
+          } catch (excelErr) {
+            console.warn("ExcelJS konnte Mitarbeiterdatei nicht direkt als XLSX öffnen. Prüfe Text/HTML/CSV-Fallback:", excelErr);
           }
-        } else {
-          const arrayBuffer = await file.arrayBuffer();
-          const wb = new ExcelJS.Workbook();
-          await wb.xlsx.load(arrayBuffer);
+        }
 
-          wb.worksheets.forEach(ws => {
-            if (!ws) return;
-            const maxR = Math.max(
-              ws.rowCount || 0,
-              ws.actualRowCount || 0,
-              (ws._rows ? ws._rows.length : 0),
-              100
-            );
-
-            let emptyCount = 0;
-            for (let r = 1; r <= maxR; r++) {
-              const row = ws.getRow(r);
-              if (!row) {
-                emptyCount++;
-                if (emptyCount > 60 && r > 20) break;
-                continue;
-              }
-
-              let cellA = getCleanCellValue(row.getCell(1));
-              let cellB = getCleanCellValue(row.getCell(2));
-              let cellC = getCleanCellValue(row.getCell(3));
-              let cellD = getCleanCellValue(row.getCell(4));
-
-              if (!cellA && !cellB && !cellC && !cellD) {
-                emptyCount++;
-                if (emptyCount > 60 && r > 20) break;
-                continue;
-              }
-              emptyCount = 0;
-
-              // Fall 1: Spalte A = Nummer, Spalte B = Name
-              // Fall 2: Spalte A = Nummer, Spalte B = Vorname, Spalte C = Nachname
-              if (/^\d+/.test(cellA) && cellB && cellC && !/^\d+/.test(cellB) && !/^\d+/.test(cellC)) {
-                addStaffItem(cellA, `${cellB} ${cellC}`, ws.name);
-              }
-              // Fall 3: Spalte A = laufende ID (1,2,3...), Spalte B = Personalnummer (z. B. 1773), Spalte C = Name
-              else if (/^\d+$/.test(cellA) && cellA.length <= 2 && /^\d+$/.test(cellB) && cellB.length >= 3 && cellC) {
-                addStaffItem(cellB, cellC, ws.name);
-              }
-              // Fall 4: Standard Spalte A und B
-              else if (cellA || cellB) {
-                addStaffItem(cellA, cellB, ws.name);
+        // Text-/CSV-/HTML-Fallback (falls .csv oder wenn ExcelJS fehlgeschlagen ist, z. B. CSV/TSV oder HTML mit .xls-Endung)
+        if (!loadedViaExcelJS || parsedList.length === 0) {
+          try {
+            const text = await file.text();
+            if (text.includes("<table") || text.includes("<tr")) {
+              const parser = new DOMParser();
+              const doc = parser.parseFromString(text, "text/html");
+              const rows = doc.querySelectorAll("tr");
+              rows.forEach(tr => {
+                const cells = Array.from(tr.querySelectorAll("td, th")).map(c => c.textContent.trim());
+                if (cells.length >= 2) {
+                  addStaffItem(cells[0], cells[1]);
+                } else if (cells.length === 1) {
+                  addStaffItem(cells[0], "");
+                }
+              });
+            } else {
+              const lines = text.split(/\r?\n/);
+              for (let l = 0; l < lines.length; l++) {
+                const line = lines[l].trim();
+                if (!line) continue;
+                let parts = line.split(";");
+                if (parts.length < 2) parts = line.split("\t");
+                if (parts.length < 2) parts = line.split(",");
+                if (parts.length < 2) parts = line.split("|");
+                if (parts.length >= 2) {
+                  let pA = parts[0];
+                  let pB = parts[1];
+                  let pC = parts.length > 2 ? parts[2] : "";
+                  if (pC && !/^\d+$/.test(pC.trim()) && !/^\d+$/.test(pB.trim())) {
+                    pB = `${pB.trim()} ${pC.trim()}`;
+                  }
+                  addStaffItem(pA, pB, "");
+                } else {
+                  addStaffItem(parts[0], "", "");
+                }
               }
             }
-          });
+          } catch (textErr) {
+            console.warn("Text-Fallback nicht erfolgreich:", textErr);
+          }
         }
 
         if (parsedList.length === 0) {
-          alert("In der Mitarbeiterdatei wurden keine Mitarbeiter erkannt. Bitte stellen Sie sicher, dass in Spalte A die Nummern und in Spalte B die Namen stehen.");
+          const isOldXls = file.name.toLowerCase().endsWith(".xls") && !file.name.toLowerCase().endsWith(".xlsx");
+          if (isOldXls) {
+            alert(`Die Datei "${file.name}" liegt im alten Excel 97-2003-Format (.xls) vor.\n\nBitte öffnen Sie die Datei kurz in Excel und speichern Sie sie über "Datei > Speichern unter" als modernes "Excel-Arbeitsmappe (.xlsx)" oder als ".csv" ab. Danach kann sie sofort eingelesen werden.`);
+          } else {
+            alert("In der Mitarbeiterdatei wurden keine Mitarbeiter erkannt. Bitte stellen Sie sicher, dass in Spalte A die Nummern und in Spalte B die Namen stehen.");
+          }
           return;
         }
 
@@ -867,6 +923,8 @@ document.addEventListener("DOMContentLoaded", () => {
   function setupDropZone(dropZone, fileInput, onFileLoaded) {
     if (!dropZone || !fileInput) return;
 
+    let dragCounter = 0;
+
     dropZone.addEventListener("click", (e) => {
       // Nicht auslösen, falls ein Button, Select, Label, Link oder das Info-Feld angeklickt wurde
       if (
@@ -889,30 +947,44 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
 
-    ["dragenter", "dragover"].forEach(evt => {
-      dropZone.addEventListener(evt, (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        dropZone.classList.add("dragover");
-      });
-    });
+    dropZone.addEventListener("dragenter", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dragCounter++;
+      if (e.dataTransfer) {
+        e.dataTransfer.dropEffect = "copy";
+      }
+      dropZone.classList.add("dragover");
+    }, false);
 
-    ["dragleave", "drop"].forEach(evt => {
-      dropZone.addEventListener(evt, (e) => {
-        e.preventDefault();
-        e.stopPropagation();
+    dropZone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) {
+        e.dataTransfer.dropEffect = "copy";
+      }
+      dropZone.classList.add("dragover");
+    }, false);
+
+    dropZone.addEventListener("dragleave", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dragCounter--;
+      if (dragCounter <= 0) {
+        dragCounter = 0;
         dropZone.classList.remove("dragover");
-      });
-    });
+      }
+    }, false);
 
     dropZone.addEventListener("drop", (e) => {
       e.preventDefault();
       e.stopPropagation();
+      dragCounter = 0;
       dropZone.classList.remove("dragover");
       if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
         onFileLoaded(e.dataTransfer.files[0]);
       }
-    });
+    }, false);
   }
 
   function populateSheetSelect(selectEl, worksheets) {

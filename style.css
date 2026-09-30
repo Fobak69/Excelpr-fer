@@ -207,36 +207,57 @@ body {
   box-shadow: var(--shadow-sm);
 }
 
-.drop-card:hover, .drop-card.dragover {
+.drop-card:hover {
   transform: translateY(-2px);
   box-shadow: var(--shadow-md);
+}
+
+.drop-card.dragover {
+  transform: scale(1.015);
+  box-shadow: 0 8px 24px rgba(2, 132, 199, 0.25);
+  border-style: solid;
 }
 
 .drop-tgt {
   border-color: #93c5fd;
   background: linear-gradient(180deg, #ffffff 0%, #f8faff 100%);
 }
-.drop-tgt:hover, .drop-tgt.dragover {
+.drop-tgt:hover {
   border-color: #2563eb;
   background-color: #eff6ff;
+}
+.drop-tgt.dragover {
+  border-color: #2563eb;
+  background-color: #eff6ff;
+  border-width: 2px;
 }
 
 .drop-ref {
   border-color: #a7f3d0;
   background: linear-gradient(180deg, #ffffff 0%, #f0fdf4 100%);
 }
-.drop-ref:hover, .drop-ref.dragover {
+.drop-ref:hover {
   border-color: #059669;
   background-color: #ecfdf5;
+}
+.drop-ref.dragover {
+  border-color: #059669;
+  background-color: #ecfdf5;
+  border-width: 2px;
 }
 
 .drop-staff {
   border-color: #bae6fd;
   background: linear-gradient(180deg, #ffffff 0%, #f0f9ff 100%);
 }
-.drop-staff:hover, .drop-staff.dragover {
+.drop-staff:hover {
   border-color: #0284c7;
   background-color: #f0f9ff;
+}
+.drop-staff.dragover {
+  border-color: #0284c7;
+  background-color: #e0f2fe;
+  border-width: 2px;
 }
 
 .drop-card-header {
@@ -244,6 +265,10 @@ body {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 0.85rem;
+}
+
+.drop-card-header * {
+  pointer-events: none;
 }
 
 .drop-card-header h3 {
@@ -256,6 +281,14 @@ body {
   text-align: center;
   padding: 1.5rem 0.5rem;
   cursor: pointer;
+}
+
+.drop-zone-content * {
+  pointer-events: none;
+}
+
+.file-info * {
+  pointer-events: auto;
 }
 
 .drop-icon {
