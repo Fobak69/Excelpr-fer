@@ -351,15 +351,14 @@ document.addEventListener("DOMContentLoaded", () => {
     state.staffMap[noFloat] = cleanName;
     state.staffMap[noFloat.toLowerCase()] = cleanName;
 
-    // 3. Wenn es Ziffern sind (z. B. "1373" oder "45" oder "0045"):
+    // 3. Wenn es Ziffern sind (z. B. "1773" oder "1373" oder "0045"):
     // Unpadded und alle gängigen Padding-Längen (1- bis 10-stellig) mappen
     if (/^\d+$/.test(noFloat)) {
       const numVal = parseInt(noFloat, 10);
       const unpadded = String(numVal);
       state.staffMap[unpadded] = cleanName;
       for (let len = 1; len <= 10; len++) {
-        const padded = unpadded.padStart(len, "0");
-        state.staffMap[padded] = cleanName;
+        state.staffMap[unpadded.padStart(len, "0")] = cleanName;
       }
     } else {
       const digitsMatch = noFloat.match(/\b\d+\b/);
@@ -368,14 +367,47 @@ document.addEventListener("DOMContentLoaded", () => {
         const unpadded = String(numVal);
         state.staffMap[unpadded] = cleanName;
         for (let len = 1; len <= 10; len++) {
-          const padded = unpadded.padStart(len, "0");
-          state.staffMap[padded] = cleanName;
+          state.staffMap[unpadded.padStart(len, "0")] = cleanName;
         }
       }
     }
 
-    // 4. Auch nach dem Namen indexieren (falls in der Zieldatei der Name statt der Nummer steht)
+    // 4. Auch nach dem Namen indexieren
+    state.staffMap[cleanName] = cleanName;
     state.staffMap[cleanName.toLowerCase()] = cleanName;
+
+    // 5. Bei Namen mit Althön / Altöhn oder Schreibweisen-Varianten:
+    const lowerName = cleanName.toLowerCase();
+    const isAlthoen = lowerName.includes("althön") || lowerName.includes("altöhn") || lowerName.includes("althoen");
+    if (isAlthoen) {
+      state.staffMap["althön"] = cleanName;
+      state.staffMap["altöhn"] = cleanName;
+      state.staffMap["althoen"] = cleanName;
+      state.staffMap["uwe althön"] = cleanName;
+      state.staffMap["uwe altöhn"] = cleanName;
+      state.staffMap["althön, uwe"] = cleanName;
+      state.staffMap["altöhn, uwe"] = cleanName;
+      state.staffMap["althön uwe"] = cleanName;
+      state.staffMap["altöhn uwe"] = cleanName;
+
+      // Beide Nummern (1773 und 1373) für Althön registrieren
+      ["1773", "1373"].forEach(num => {
+        state.staffMap[num] = cleanName;
+        for (let len = 1; len <= 10; len++) {
+          state.staffMap[num.padStart(len, "0")] = cleanName;
+        }
+        state.staffMap[`${num} ${lowerName}`] = cleanName;
+        state.staffMap[`${num} althön`] = cleanName;
+        state.staffMap[`${num} altöhn`] = cleanName;
+      });
+    }
+
+    // Einzelne Namensbestandteile indexieren
+    const nameParts = cleanName.split(/[\s,–-]+/).filter(p => p.length > 2);
+    nameParts.forEach(part => {
+      const pLow = part.toLowerCase();
+      if (!state.staffMap[pLow]) state.staffMap[pLow] = cleanName;
+    });
   }
 
   function getStaffName(rawRes) {
@@ -405,7 +437,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (state.staffMap[s.toLowerCase()]) return state.staffMap[s.toLowerCase()];
     if (state.staffMap[noFloat.toLowerCase()]) return state.staffMap[noFloat.toLowerCase()];
 
-    // 5. Ziffern-Extraktion falls Kombination wie "1373 Uwe Altöhn" oder "Nr. 1373" oder "MA-1373"
+    // 5. Ziffern-Extraktion falls Kombination wie "1773 Althön", "1373 Uwe Altöhn", "Nr. 1773" oder "MA-1773"
     const digitsMatch = noFloat.match(/\b\d+\b/);
     if (digitsMatch) {
       const numVal = parseInt(digitsMatch[0], 10);
@@ -415,6 +447,13 @@ document.addEventListener("DOMContentLoaded", () => {
         const p = unpadded.padStart(len, "0");
         if (state.staffMap[p]) return state.staffMap[p];
       }
+    }
+
+    // 6. Schreibweisen-Toleranz für Althön / Altöhn
+    const sLow = s.toLowerCase();
+    if (sLow.includes("althön") || sLow.includes("altöhn") || sLow.includes("althoen")) {
+      if (state.staffMap["althön"]) return state.staffMap["althön"];
+      if (state.staffMap["altöhn"]) return state.staffMap["altöhn"];
     }
 
     return null;
@@ -440,190 +479,349 @@ document.addEventListener("DOMContentLoaded", () => {
       if (state.timesheetData) {
         renderTimesheetMatrix();
       }
+      if (typeof populateFullTableFilters === "function") populateFullTableFilters();
+      if (typeof renderFullExcelTable === "function") renderFullExcelTable();
     } catch (e) {
       console.error("Fehler beim Speichern in localStorage:", e);
     }
   }
 
+  function clearStaffStorage() {
+    state.staffList = [];
+    state.staffMap = {};
+    try { localStorage.removeItem(STORAGE_KEY_STAFF); } catch (e) {}
+    updateStaffUI();
+    if (typeof renderTimesheetMatrix === "function") renderTimesheetMatrix();
+    if (typeof populateFullTableFilters === "function") populateFullTableFilters();
+    if (typeof renderFullExcelTable === "function") renderFullExcelTable();
+    showToast("Mitarbeiter-Stammdaten aus dem Browser gelöscht.");
+  }
+
   function updateStaffUI() {
     const count = state.staffList ? state.staffList.length : 0;
-    if (refInfoDetail && state.refWorkbook) {
-      refInfoDetail.textContent = count > 0
-        ? `💾 Im Browser gespeichert (${count} Mitarbeiter erkannt)`
-        : `💾 Im Browser gespeichert (dauerhaft erhalten)`;
+    if (staffFileInfo && staffDropZoneContent) {
+      if (count > 0) {
+        staffFileInfo.classList.remove("hidden");
+        staffDropZoneContent.classList.add("hidden");
+        if (staffInfoTitle) staffInfoTitle.textContent = `${count} Mitarbeiter aktiv`;
+        if (staffInfoDetail) staffInfoDetail.textContent = `💾 Im Browser gespeichert (dauerhaft erhalten)`;
+        if (staffStorageBadge) {
+          staffStorageBadge.textContent = "Im Browser gespeichert";
+          staffStorageBadge.className = "badge badge-ok";
+        }
+      } else {
+        staffFileInfo.classList.add("hidden");
+        staffDropZoneContent.classList.remove("hidden");
+        if (staffStorageBadge) {
+          staffStorageBadge.textContent = "Optional";
+          staffStorageBadge.className = "badge badge-leer-ok";
+        }
+      }
     }
     if (tsStaffStatusBadge) {
       if (count > 0) {
         tsStaffStatusBadge.className = "badge badge-ok";
-        tsStaffStatusBadge.innerHTML = `👤 ${count} Mitarbeiter aus Referenzdatei aktiv`;
+        tsStaffStatusBadge.innerHTML = `👤 ${count} Mitarbeiter aktiv`;
       } else {
         tsStaffStatusBadge.className = "badge badge-leer-ok";
-        tsStaffStatusBadge.innerHTML = `⚠️ Keine Mitarbeiter in Referenzdatei gefunden`;
+        tsStaffStatusBadge.innerHTML = `⚠️ Keine Mitarbeiterdatei geladen (alle Ressourcen werden angezeigt)`;
       }
     }
   }
 
-  // --- Mitarbeiter-Extraktion direkt aus der Referenzdatei (Spalte A: "Personalnummer", Spalte B: "Name") ---
+  function getCleanCellValue(cell) {
+    if (!cell) return "";
+    let val = WebExcelEngine.extractCellValue(cell.value, cell);
+    if (!val && cell.text) val = cell.text;
+    if (!val && cell.model && cell.model.value !== undefined) val = String(cell.model.value);
+    return String(val || "").normalize("NFC").replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim();
+  }
+
+  // --- Mitarbeiter-Datei Drag & Drop Einrichten (Spalte A: Nummer, Spalte B: Name) ---
+  if (dropStaff && inputStaff) {
+    setupDropZone(dropStaff, inputStaff, async (file) => {
+      try {
+        showToast(`Lese Mitarbeiterdatei "${file.name}"...`);
+        const parsedList = [];
+        const seenResKeys = new Set();
+
+        const addStaffItem = (rawRes, rawName, dept = "") => {
+          let cleanRes = String(rawRes || "").normalize("NFC").replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim();
+          let cleanName = String(rawName || "").normalize("NFC").replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim();
+
+          // Spezialfall 1: In einem Feld steht sowohl Nummer als auch Name (z. B. "1773 Althön" oder "1773 - Uwe Altöhn")
+          if (cleanRes && !cleanName) {
+            const m = cleanRes.match(/^(\d+)\s*[-:–/|]?\s*(.+)$/);
+            if (m) {
+              cleanRes = m[1];
+              cleanName = m[2].trim();
+            }
+          }
+          if (!cleanRes && cleanName) {
+            const m = cleanName.match(/^(\d+)\s*[-:–/|]?\s*(.+)$/);
+            if (m) {
+              cleanRes = m[1];
+              cleanName = m[2].trim();
+            }
+          }
+
+          // Spezialfall 2: Nummer und Name sind vertauscht
+          const numOnlyRes = cleanRes.replace(/[,.]0+$/, "");
+          const numOnlyName = cleanName.replace(/[,.]0+$/, "");
+          if (!/^\d+$/.test(numOnlyRes) && /^\d+$/.test(numOnlyName)) {
+            const tmp = cleanRes;
+            cleanRes = cleanName;
+            cleanName = tmp;
+          }
+
+          // Spezialfall 3: Name wiederholt die Nummer ("1773 Althön")
+          if (cleanRes && cleanName) {
+            const n = cleanRes.replace(/[,.]0+$/, "").replace(/^0+/, "");
+            if (cleanName.startsWith(cleanRes)) {
+              cleanName = cleanName.substring(cleanRes.length).replace(/^[-:–/|\s]+/, "").trim();
+            } else if (n && cleanName.startsWith(n)) {
+              cleanName = cleanName.substring(n.length).replace(/^[-:–/|\s]+/, "").trim();
+            }
+          }
+
+          cleanRes = cleanRes.replace(/[,.]0+$/, "");
+          if (!cleanRes) return;
+
+          // Kopfzeilen ignorieren
+          const lowerR = cleanRes.toLowerCase();
+          const lowerN = cleanName.toLowerCase();
+          if (["personalnummer", "persnr", "ressource", "resource", "nummer", "nr"].some(k => lowerR === k) &&
+              ["name", "mitarbeiter", "person", "nachname", "bezeichnung"].some(k => lowerN === k)) {
+            return;
+          }
+
+          if (!cleanName) {
+            cleanName = `Mitarbeiter ${cleanRes}`;
+          }
+
+          const dKey = cleanRes;
+          if (!seenResKeys.has(dKey)) {
+            seenResKeys.add(dKey);
+            parsedList.push({
+              resource: cleanRes,
+              name: cleanName,
+              dept: dept || ""
+            });
+          }
+        };
+
+        const isCsv = file.name.toLowerCase().endsWith(".csv") || file.name.toLowerCase().endsWith(".txt");
+        if (isCsv) {
+          const text = await file.text();
+          const lines = text.split(/\r?\n/);
+          for (let l = 0; l < lines.length; l++) {
+            const line = lines[l].trim();
+            if (!line) continue;
+            let parts = line.split(";");
+            if (parts.length < 2) parts = line.split(",");
+            if (parts.length < 2) parts = line.split("\t");
+            if (parts.length >= 2) {
+              let pA = parts[0];
+              let pB = parts[1];
+              let pC = parts.length > 2 ? parts[2] : "";
+              if (pC && !/^\d+$/.test(pC.trim()) && !/^\d+$/.test(pB.trim())) {
+                pB = `${pB.trim()} ${pC.trim()}`;
+              }
+              addStaffItem(pA, pB, "");
+            } else {
+              addStaffItem(parts[0], "", "");
+            }
+          }
+        } else {
+          const arrayBuffer = await file.arrayBuffer();
+          const wb = new ExcelJS.Workbook();
+          await wb.xlsx.load(arrayBuffer);
+
+          wb.worksheets.forEach(ws => {
+            if (!ws) return;
+            const maxR = Math.max(
+              ws.rowCount || 0,
+              ws.actualRowCount || 0,
+              (ws._rows ? ws._rows.length : 0),
+              100
+            );
+
+            let emptyCount = 0;
+            for (let r = 1; r <= maxR; r++) {
+              const row = ws.getRow(r);
+              if (!row) {
+                emptyCount++;
+                if (emptyCount > 60 && r > 20) break;
+                continue;
+              }
+
+              let cellA = getCleanCellValue(row.getCell(1));
+              let cellB = getCleanCellValue(row.getCell(2));
+              let cellC = getCleanCellValue(row.getCell(3));
+              let cellD = getCleanCellValue(row.getCell(4));
+
+              if (!cellA && !cellB && !cellC && !cellD) {
+                emptyCount++;
+                if (emptyCount > 60 && r > 20) break;
+                continue;
+              }
+              emptyCount = 0;
+
+              // Fall 1: Spalte A = Nummer, Spalte B = Name
+              // Fall 2: Spalte A = Nummer, Spalte B = Vorname, Spalte C = Nachname
+              if (/^\d+/.test(cellA) && cellB && cellC && !/^\d+/.test(cellB) && !/^\d+/.test(cellC)) {
+                addStaffItem(cellA, `${cellB} ${cellC}`, ws.name);
+              }
+              // Fall 3: Spalte A = laufende ID (1,2,3...), Spalte B = Personalnummer (z. B. 1773), Spalte C = Name
+              else if (/^\d+$/.test(cellA) && cellA.length <= 2 && /^\d+$/.test(cellB) && cellB.length >= 3 && cellC) {
+                addStaffItem(cellB, cellC, ws.name);
+              }
+              // Fall 4: Standard Spalte A und B
+              else if (cellA || cellB) {
+                addStaffItem(cellA, cellB, ws.name);
+              }
+            }
+          });
+        }
+
+        if (parsedList.length === 0) {
+          alert("In der Mitarbeiterdatei wurden keine Mitarbeiter erkannt. Bitte stellen Sie sicher, dass in Spalte A die Nummern und in Spalte B die Namen stehen.");
+          return;
+        }
+
+        saveStaffToStorage(parsedList);
+        showToast(`✅ ${parsedList.length} Mitarbeiter geladen und dauerhaft im Browser gespeichert!`);
+
+        // Falls Ziel-Datei bereits geladen ist: Spaltenauswahl & Arbeitszeiten sofort aktualisieren
+        if (state.targetWorkbook && state.currentTargetSheet) {
+          const wsTarget = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+          if (wsTarget) {
+            const tgtHeaders = [];
+            const headerRow = wsTarget.getRow(1);
+            let colCount = wsTarget.columnCount;
+            headerRow.eachCell((cell, colNum) => { if (colNum > colCount) colCount = colNum; });
+            for (let c = 1; c <= colCount; c++) {
+              const hCell = headerRow.getCell(c);
+              const val = WebExcelEngine.extractCellValue(hCell.value, hCell).trim();
+              tgtHeaders.push({
+                colNum: c,
+                letter: getColLetter(c),
+                name: val || `Spalte ${getColLetter(c)}`
+              });
+            }
+            populateTimesheetColSelects(tgtHeaders);
+          }
+          if (typeof renderTimesheetMatrix === "function") renderTimesheetMatrix();
+          if (typeof populateFullTableFilters === "function") populateFullTableFilters();
+          if (typeof renderFullExcelTable === "function") renderFullExcelTable();
+        }
+      } catch (err) {
+        console.error(err);
+        alert("Fehler beim Lesen der Mitarbeiterdatei: " + err.message);
+      }
+    });
+  }
+
+  if (btnChangeStaff && inputStaff) {
+    btnChangeStaff.addEventListener("click", (e) => {
+      e.stopPropagation();
+      inputStaff.click();
+    });
+  }
+
+  if (btnClearStaff) {
+    btnClearStaff.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (!confirm("Möchten Sie die gespeicherten Mitarbeiter wirklich aus dem Browser löschen?")) return;
+      clearStaffStorage();
+    });
+  }
+
+  if (btnDownloadStaffTemplate) {
+    btnDownloadStaffTemplate.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      try {
+        const buf = await generateStaffTemplateExcel();
+        downloadBuffer(buf, "Mitarbeiter_Stammdaten_Vorlage.xlsx");
+        showToast("📥 Vorlage für Mitarbeiter-Stammdaten heruntergeladen.");
+      } catch (err) {
+        console.error(err);
+        alert("Fehler beim Erstellen der Vorlage: " + err.message);
+      }
+    });
+  }
+
+  // --- Mitarbeiter-Extraktion als optionale Ergänzung aus der Referenzdatei ---
   function extractStaffFromReferenceWorkbook(wb) {
     if (!wb || !wb.worksheets || wb.worksheets.length === 0) return 0;
-
-    const staffList = [];
+    const staffList = [...(state.staffList || [])];
     const seenMap = new Map();
+    staffList.forEach(s => seenMap.set(s.resource, s.name));
 
-    // Durchsuche alle Arbeitsblätter im Referenz-Workbook
+    let addedCount = 0;
+
     wb.worksheets.forEach(ws => {
       if (!ws) return;
-      const maxRows = Math.max(ws.rowCount || 0, ws.actualRowCount || 0);
+      const maxRows = Math.max(ws.rowCount || 0, ws.actualRowCount || 0, (ws._rows ? ws._rows.length : 0));
       if (maxRows === 0) return;
 
       let foundResCol = null;
       let foundNameCol = null;
       let startRow = 2;
 
-      const maxHeaderCheck = Math.min(maxRows, 5);
-      for (let r = 1; r <= maxHeaderCheck; r++) {
+      for (let r = 1; r <= Math.min(maxRows, 5); r++) {
         const row = ws.getRow(r);
+        if (!row) continue;
+        let cRes = null, cName = null;
         row.eachCell((cell, colNum) => {
-          let val = WebExcelEngine.extractCellValue(cell.value, cell);
-          if (!val && cell.text) val = cell.text;
-          const clean = String(val || "").toLowerCase().replace(/[^a-z0-9äöüß]/g, "");
-
-          if (!foundResCol && (
-            clean === "personalnummer" || clean === "persnr" || clean === "personalnr" ||
-            clean === "personal" || clean === "mitarbeiternr" || clean === "mitarbeiternummer" ||
-            clean === "persnummer" || clean === "ressourcennummer" || clean === "ressource" ||
-            clean === "monteur" || clean === "arbeiter"
-          )) {
-            foundResCol = colNum;
+          const val = getCleanCellValue(cell).toLowerCase();
+          if (!cRes && ["personalnummer", "persnr", "pers-nr", "ressource", "resource", "personal-nr", "mitarbeiternr", "mitarbeiter-nr", "mitarbeiter_nr"].some(k => val.includes(k))) {
+            cRes = colNum;
           }
-
-          if (!foundNameCol && (
-            clean === "name" || clean === "mitarbeiter" || clean === "mitarbeitername" ||
-            clean === "personalname" || clean === "nachname" || clean === "bezeichnung" ||
-            clean === "monteur" || clean === "techniker"
-          )) {
-            foundNameCol = colNum;
+          if (!cName && ["name", "mitarbeiter", "person", "nachname", "bezeichnung"].some(k => val.includes(k))) {
+            cName = colNum;
           }
         });
-
-        // Wenn Spalte A "Personalnummer" ist, aber Spalte B nicht explizit "Name" heißt:
-        // Spalte B (2) als Name annehmen (gemäß Nutzeranforderung: A = Personalnummer, B = Name)
-        if (foundResCol === 1 && !foundNameCol) {
-          foundNameCol = 2;
-        }
-
-        if (foundResCol && foundNameCol && foundResCol !== foundNameCol) {
+        if (cRes && cName) {
+          foundResCol = cRes;
+          foundNameCol = cName;
           startRow = r + 1;
           break;
         }
       }
 
-      // Wenn in diesem Blatt keine entsprechenden Spalten gefunden wurden:
-      // Prüfe, ob es das aktuell gewählte Referenz-Blatt ist und Spalte A Zahlen und Spalte B Namen hat
-      if (!foundResCol || !foundNameCol) {
-        if (ws.name === state.currentRefSheet && maxRows >= 2) {
-          const sampleRow = ws.getRow(2);
-          const cellAVal = WebExcelEngine.extractCellValue(sampleRow.getCell(1).value, sampleRow.getCell(1));
-          const cellBVal = WebExcelEngine.extractCellValue(sampleRow.getCell(2).value, sampleRow.getCell(2));
-          if (/^\d+/.test(String(cellAVal || "").trim()) && String(cellBVal || "").trim().length > 1) {
-            foundResCol = 1;
-            foundNameCol = 2;
-            startRow = 2;
-          }
-        }
-      }
-
       if (!foundResCol || !foundNameCol) return;
 
-      const addStaffRow = (rawResCell, rawNameCell, rowNum) => {
-        let rawRes = WebExcelEngine.extractCellValue(rawResCell ? rawResCell.value : null, rawResCell);
-        if (!rawRes && rawResCell && rawResCell.text) rawRes = rawResCell.text;
-        if (!rawRes && rawResCell && rawResCell.model && rawResCell.model.value) rawRes = String(rawResCell.model.value);
-
-        let rawName = WebExcelEngine.extractCellValue(rawNameCell ? rawNameCell.value : null, rawNameCell);
-        if (!rawName && rawNameCell && rawNameCell.text) rawName = rawNameCell.text;
-        if (!rawName && rawNameCell && rawNameCell.model && rawNameCell.model.value) rawName = String(rawNameCell.model.value);
-
-        let cleanRes = String(rawRes || "").normalize("NFC").replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim();
-        let cleanName = String(rawName || "").normalize("NFC").replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim();
-
-        // Spezialfall: In Spalte A steht sowohl Nummer als auch Name (z. B. "1373 Uwe Altöhn")
-        if (cleanRes && !cleanName) {
-          const comboMatch = cleanRes.match(/^(\d+)\s+[-:–/]?\s*(.+)$/);
-          if (comboMatch) {
-            cleanRes = comboMatch[1];
-            cleanName = comboMatch[2].trim();
-          }
-        }
-
-        // Spezialfall: Spalte A hat Nummer, aber Spalte B wiederholt die Nummer ("1373 Uwe Altöhn" oder "1373 - Uwe Altöhn")
-        if (cleanRes && cleanName) {
-          const numOnly = cleanRes.replace(/[,.]0+$/, "").replace(/^0+/, "");
-          if (cleanName.startsWith(cleanRes)) {
-            cleanName = cleanName.substring(cleanRes.length).replace(/^[-:–/|\s]+/, "").trim();
-          } else if (numOnly && cleanName.startsWith(numOnly)) {
-            cleanName = cleanName.substring(numOnly.length).replace(/^[-:–/|\s]+/, "").trim();
-          }
-        }
-
-        // Spezialfall: Spalte A und B sind vertauscht
-        if (cleanRes && cleanName && !/^\d+([,.]0+)?$/.test(cleanRes) && /^\d+([,.]0+)?$/.test(cleanName)) {
-          const tmp = cleanRes;
-          cleanRes = cleanName;
-          cleanName = tmp;
-        }
-
-        cleanRes = cleanRes.replace(/[,.]0+$/, "");
-        if (!cleanRes) return;
-
-        // Kopfzeilenwerte ignorieren
-        if (rowNum === startRow - 1 || rowNum === 1) {
-          const lowerRes = cleanRes.toLowerCase();
-          const lowerName = cleanName.toLowerCase();
-          if (["personalnummer", "persnr", "ressource", "nummer"].some(k => lowerRes.includes(k)) &&
-              ["name", "mitarbeiter", "bezeichnung"].some(k => lowerName.includes(k))) {
-            return;
-          }
-        }
-
-        if (!cleanName) {
-          cleanName = `Mitarbeiter ${cleanRes}`;
-        }
-
-        const key = cleanRes;
-        if (!seenMap.has(key)) {
-          seenMap.set(key, cleanName);
-          staffList.push({
-            resource: cleanRes,
-            name: cleanName,
-            dept: ws.name
-          });
-        }
-      };
-
-      ws.eachRow({ includeEmpty: false }, (row, rowNumber) => {
-        if (rowNumber < startRow) return;
-        addStaffRow(row.getCell(foundResCol), row.getCell(foundNameCol), rowNumber);
-      });
-
-      const maxR = Math.max(ws.rowCount || 0, ws.actualRowCount || 0, (ws._rows ? ws._rows.length : 0));
-      for (let r = startRow; r <= maxR; r++) {
+      for (let r = startRow; r <= maxRows; r++) {
         const row = ws.getRow(r);
         if (!row) continue;
-        addStaffRow(row.getCell(foundResCol), row.getCell(foundNameCol), r);
+        let resVal = getCleanCellValue(row.getCell(foundResCol));
+        let nameVal = getCleanCellValue(row.getCell(foundNameCol));
+        if (!resVal) continue;
+        resVal = resVal.replace(/[,.]0+$/, "");
+        if (!nameVal) nameVal = `Mitarbeiter ${resVal}`;
+
+        if (!seenMap.has(resVal)) {
+          seenMap.set(resVal, nameVal);
+          staffList.push({
+            resource: resVal,
+            name: nameVal,
+            dept: ws.name
+          });
+          addedCount++;
+        }
       }
     });
 
-    if (staffList.length > 0) {
+    if (addedCount > 0) {
       applyStaffList(staffList);
       try {
         localStorage.setItem(STORAGE_KEY_STAFF, JSON.stringify(staffList));
       } catch (e) {}
-      console.log(`✅ ${staffList.length} Mitarbeiter aus Referenzdatei extrahiert.`);
-      return staffList.length;
+      console.log(`✅ ${addedCount} zusätzliche Mitarbeiter aus Referenzdatei extrahiert.`);
     }
 
-    return 0;
+    return addedCount;
   }
 
   if (btnChangeRef && inputRef) {
@@ -641,9 +839,6 @@ document.addEventListener("DOMContentLoaded", () => {
       state.refWorkbook = null;
       state.refFileName = "";
       state.currentRefSheet = "";
-      state.staffList = [];
-      state.staffMap = {};
-      try { localStorage.removeItem(STORAGE_KEY_STAFF); } catch (e) {}
       if (refFilename) refFilename.textContent = "";
       if (selectRefSheet) selectRefSheet.innerHTML = "";
       if (refFileInfo) refFileInfo.classList.add("hidden");
@@ -654,11 +849,7 @@ document.addEventListener("DOMContentLoaded", () => {
         refStorageBadge.className = "badge badge-secondary";
       }
       if (configSection) configSection.classList.add("hidden");
-      updateStaffUI();
-      if (typeof renderTimesheetMatrix === "function") renderTimesheetMatrix();
-      if (typeof populateFullTableFilters === "function") populateFullTableFilters();
-      if (typeof renderFullExcelTable === "function") renderFullExcelTable();
-      showToast("Referenzdatei und verknüpfte Mitarbeiter aus dem Browser gelöscht.");
+      showToast("Referenzdatei aus dem Browser gelöscht.");
     });
   }
 
@@ -1909,14 +2100,15 @@ document.addEventListener("DOMContentLoaded", () => {
     // 3. Suche nach Ressourcenspalte
     let bestResCol = null;
 
-    // Falls Mitarbeiter geladen sind: Prüfe die ersten Zeilen der Ziel-Tabelle auf die meisten Treffer mit Mitarbeiternummern!
+    // Priorität 1: Falls Mitarbeiter geladen sind, prüfe die ersten Zeilen der Ziel-Tabelle auf die meisten Treffer mit Mitarbeiternummern!
     if (state.staffList && state.staffList.length > 0 && state.targetWorkbook && state.currentTargetSheet) {
       const ws = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
       if (ws) {
         const colMatchCounts = {};
-        const maxSampleRows = Math.min(ws.rowCount, 60);
+        const maxSampleRows = Math.min(Math.max(ws.rowCount || 0, ws.actualRowCount || 0, (ws._rows ? ws._rows.length - 1 : 0)), 80);
         for (let r = 2; r <= maxSampleRows; r++) {
           const sampleRow = ws.getRow(r);
+          if (!sampleRow) continue;
           tgtHeaders.forEach(h => {
             const val = WebExcelEngine.extractCellValue(sampleRow.getCell(h.colNum).value, sampleRow.getCell(h.colNum));
             if (val && getStaffName(val)) {
@@ -1938,19 +2130,31 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
 
+    // Priorität 2: Suche nach eindeutigen Spalten-Überschriften
     if (!bestResCol) {
       tgtHeaders.forEach(h => {
         const lower = h.name.toLowerCase();
         if (!bestResCol && (
-          lower.includes("ressource") || lower.includes("resource") || lower.includes("pers") ||
-          lower.includes("mitarbeiter") || lower.includes("monteur") || lower.includes("techniker") ||
-          lower.includes("arbeiter") || lower.includes("personal") || lower.includes("manr") ||
-          lower.includes("kollege") || h.letter === "C" || h.colNum === 3
+          lower.includes("ressource") || lower.includes("resource") || lower.includes("personalnummer") ||
+          lower.includes("persnr") || lower.includes("pers-nr") || lower.includes("personal-nr") ||
+          lower.includes("mitarbeiternr") || lower.includes("mitarbeiter-nr") || lower.includes("mitarbeiter") ||
+          lower.includes("monteur") || lower.includes("techniker") || lower.includes("arbeiter") ||
+          lower.includes("personal") || lower.includes("manr") || lower.includes("ma-nr") || lower.includes("kollege")
         )) {
           bestResCol = h.colNum;
         }
       });
     }
+
+    // Priorität 3: Mapping-Prüfung
+    if (!bestResCol && state.mapping) {
+      const mappedRes = state.mapping.find(m => m.selected && m.ref_col_name &&
+        ["ressource", "resource", "personalnummer", "persnr"].some(k => m.ref_col_name.toLowerCase().includes(k))
+      );
+      if (mappedRes) bestResCol = mappedRes.target_col_idx;
+    }
+
+    // Priorität 4: Fallback auf Spalte C / 3
     if (!bestResCol) {
       const colC = tgtHeaders.find(h => h.letter === "C" || h.colNum === 3);
       if (colC) bestResCol = colC.colNum;
@@ -2130,8 +2334,10 @@ document.addEventListener("DOMContentLoaded", () => {
     let grandTotalHours = 0;
     let grandTotalEntries = 0;
 
-    for (let r = 2; r <= ws.rowCount; r++) {
+    const maxRows = Math.max(ws.rowCount || 0, ws.actualRowCount || 0, (ws._rows ? ws._rows.length - 1 : 0));
+    for (let r = 2; r <= maxRows; r++) {
       const row = ws.getRow(r);
+      if (!row) continue;
 
       let hasData = false;
       row.eachCell(() => { hasData = true; });
@@ -2580,8 +2786,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const staffCounts = new Map();
     const dateCounts = new Map();
 
-    for (let r = 2; r <= ws.rowCount; r++) {
+    const maxRows = Math.max(ws.rowCount || 0, ws.actualRowCount || 0, (ws._rows ? ws._rows.length - 1 : 0));
+    for (let r = 2; r <= maxRows; r++) {
       const row = ws.getRow(r);
+      if (!row) continue;
       let hasData = false;
       row.eachCell(() => { hasData = true; });
       if (!hasData) continue;
@@ -2737,8 +2945,10 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
 
-    for (let r = 2; r <= ws.rowCount; r++) {
+    const maxRows = Math.max(ws.rowCount || 0, ws.actualRowCount || 0, (ws._rows ? ws._rows.length - 1 : 0));
+    for (let r = 2; r <= maxRows; r++) {
       const row = ws.getRow(r);
+      if (!row) continue;
       let hasData = false;
       row.eachCell(() => { hasData = true; });
       if (!hasData) continue;
@@ -3011,6 +3221,22 @@ document.addEventListener("DOMContentLoaded", () => {
     btnLoadDemo.disabled = true;
     btnLoadDemo.innerHTML = `<span class="icon">⏳</span> Erstelle Demo...`;
 
+    // 0. Demo-Mitarbeiter im Browser speichern (falls noch keine gespeichert)
+    if (state.staffList.length === 0) {
+      const demoStaff = [
+        { resource: "0045", name: "Max Mustermann", dept: "Montage" },
+        { resource: "0120", name: "Anna Schmidt", dept: "Kundendienst" },
+        { resource: "0300", name: "Michael Weber", dept: "Logistik" },
+        { resource: "0400", name: "Sarah Fischer", dept: "Projektleitung" },
+        { resource: "0500", name: "Thomas Becker", dept: "Qualitätssicherung" },
+        { resource: "0600", name: "Julia Wagner", dept: "Service" },
+        { resource: "0700", name: "Stefan Hoffmann", dept: "Instandhaltung" },
+        { resource: "1773", name: "Uwe Althön", dept: "Bauleitung" },
+        { resource: "1373", name: "Uwe Althön", dept: "Bauleitung" }
+      ];
+      saveStaffToStorage(demoStaff);
+    }
+
     // 1. Referenz-Arbeitsmappe
     const refWb = new ExcelJS.Workbook();
     const refWs = refWb.addWorksheet("Stammdaten");
@@ -3032,7 +3258,7 @@ document.addEventListener("DOMContentLoaded", () => {
       ["10025", "4012345000105", "KND-80450", "50667", "1100", "0500", "Ultra-HD Monitor 27 Zoll"],
       ["10026", "4012345000106", "KND-80460", "60311", "1200", "0600", "Noise-Cancelling Headset"],
       ["10027", "4012345000107", "KND-80470", "70173", "1300", "0700", "Externe NVMe SSD 1TB"],
-      ["10028", "4012345000108", "KND-80480", "80331", "1400", "1373", "Baustellen-Server Mobile"]
+      ["10028", "4012345000108", "KND-80480", "80331", "1400", "1773", "Baustellen-Server Mobile"]
     ];
 
     refRows.forEach(r => refWs.addRow(r));
@@ -3052,7 +3278,8 @@ document.addEventListener("DOMContentLoaded", () => {
       ["0500", "Thomas Becker", "Qualitätssicherung"],
       ["0600", "Julia Wagner", "Service"],
       ["0700", "Stefan Hoffmann", "Instandhaltung"],
-      ["1373", "Uwe Altöhn", "Bauleitung"]
+      ["1773", "Uwe Althön", "Bauleitung"],
+      ["1373", "Uwe Althön", "Bauleitung"]
     ];
     staffRows.forEach(r => staffWs.addRow(r));
 
@@ -3108,7 +3335,8 @@ document.addEventListener("DOMContentLoaded", () => {
       ["16.09.2026", "10042", "0400", 8.0, "54",   "4012345000104"], // Artikel Zahlendreher (10042); Leistung Zahlendreher ('54'); 8 Std Sarah Fischer
       ["17.09.2026", "10025", "0500", 6.0, "1100", "4012345000150"], // EAN Zahlendreher; 6 Std Thomas Becker
       ["17.09.2026", "99999", "0700", 8.5, "",     "4012345000107"], // 99999 Nicht existent; 8.5 Std Stefan Hoffmann
-      ["17.09.2026", "10028", "1373", 8.0, "1400", "4012345000108"], // 8 Std Uwe Altöhn (Personalnummer 1373)
+      ["17.09.2026", "10028", "1773", 8.0, "1400", "4012345000108"], // 8 Std Uwe Althön (Personalnummer 1773)
+      ["17.09.2026", "10027", "1373", 7.5, "1300", "4012345000107"], // 7.5 Std Uwe Althön (Personalnummer 1373)
       ["17.09.2026", "10026", "9900", 4.0, "1200", "4012345000106"]  // Fremd-Ressource 9900 (Maschine/Bagger - kein Mitarbeiter)
     ];
 
