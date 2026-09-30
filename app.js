@@ -28,12 +28,18 @@ document.addEventListener("DOMContentLoaded", () => {
   const refFileInfo = document.getElementById("ref-file-info");
   const refFilename = document.getElementById("ref-filename");
   const selectRefSheet = document.getElementById("select-ref-sheet");
+  const refStorageBadge = document.getElementById("ref-storage-badge");
+  const refInfoDetail = document.getElementById("ref-info-detail");
+  const btnChangeRef = document.getElementById("btn-change-ref");
+  const btnClearRef = document.getElementById("btn-clear-ref");
 
   const dropTgt = document.getElementById("drop-tgt");
   const inputTgt = document.getElementById("input-tgt");
   const tgtFileInfo = document.getElementById("tgt-file-info");
   const tgtFilename = document.getElementById("tgt-filename");
   const selectTgtSheet = document.getElementById("select-tgt-sheet");
+  const tgtStatusBadge = document.getElementById("tgt-status-badge");
+  const btnChangeTgt = document.getElementById("btn-change-tgt");
 
   // Mitarbeiter & Personal DOM
   const dropStaff = document.getElementById("drop-staff");
@@ -52,6 +58,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const selectTsDateCol = document.getElementById("select-ts-date-col");
   const selectTsHoursCol = document.getElementById("select-ts-hours-col");
   const selectTsResourceCol = document.getElementById("select-ts-resource-col");
+  const chkTsOnlyStaff = document.getElementById("chk-ts-only-staff");
   const tsStaffStatusBadge = document.getElementById("ts-staff-status-badge");
   const timesheetThead = document.getElementById("timesheet-thead");
   const timesheetTbody = document.getElementById("timesheet-tbody");
@@ -94,40 +101,203 @@ document.addEventListener("DOMContentLoaded", () => {
   const fulltableThead = document.getElementById("fulltable-thead");
   const fulltableTbody = document.getElementById("fulltable-tbody");
 
+  // --- IndexedDB Speicher für die Referenzdatei ---
+  const IDB_NAME = "ExcelPrueferStorage";
+  const IDB_VERSION = 1;
+  const IDB_STORE = "app_data";
+  const IDB_KEY_REF = "saved_reference_file";
+
+  function openAppDB() {
+    return new Promise((resolve, reject) => {
+      if (!window.indexedDB) {
+        reject(new Error("IndexedDB wird von diesem Browser nicht unterstützt."));
+        return;
+      }
+      const req = window.indexedDB.open(IDB_NAME, IDB_VERSION);
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) {
+          db.createObjectStore(IDB_STORE);
+        }
+      };
+      req.onsuccess = (e) => resolve(e.target.result);
+      req.onerror = (e) => reject(e.target.error || new Error("Konnte IndexedDB nicht öffnen"));
+    });
+  }
+
+  async function saveRefFileToStorage(fileName, buffer, selectedSheet) {
+    try {
+      const db = await openAppDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, "readwrite");
+        const store = tx.objectStore(IDB_STORE);
+        const data = {
+          fileName: fileName,
+          buffer: buffer,
+          selectedSheet: selectedSheet || "",
+          savedAt: new Date().toISOString()
+        };
+        const req = store.put(data, IDB_KEY_REF);
+        req.onsuccess = () => resolve(true);
+        req.onerror = (e) => reject(e.target.error);
+      });
+    } catch (err) {
+      console.warn("Fehler beim Speichern der Referenzdatei in IndexedDB:", err);
+      return false;
+    }
+  }
+
+  async function updateRefSheetInStorage(selectedSheet) {
+    try {
+      const db = await openAppDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, "readwrite");
+        const store = tx.objectStore(IDB_STORE);
+        const getReq = store.get(IDB_KEY_REF);
+        getReq.onsuccess = () => {
+          if (getReq.result) {
+            const item = getReq.result;
+            item.selectedSheet = selectedSheet;
+            store.put(item, IDB_KEY_REF);
+          }
+          resolve(true);
+        };
+        getReq.onerror = () => resolve(false);
+      });
+    } catch (err) {
+      console.warn("Konnte gewähltes Arbeitsblatt nicht im Speicher aktualisieren:", err);
+    }
+  }
+
+  async function loadRefFileFromStorage() {
+    try {
+      const db = await openAppDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, "readonly");
+        const store = tx.objectStore(IDB_STORE);
+        const req = store.get(IDB_KEY_REF);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = (e) => reject(e.target.error);
+      });
+    } catch (err) {
+      console.warn("Fehler beim Laden der Referenzdatei aus IndexedDB:", err);
+      return null;
+    }
+  }
+
+  async function deleteRefFileFromStorage() {
+    try {
+      const db = await openAppDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, "readwrite");
+        const store = tx.objectStore(IDB_STORE);
+        const req = store.delete(IDB_KEY_REF);
+        req.onsuccess = () => resolve(true);
+        req.onerror = (e) => reject(e.target.error);
+      });
+    } catch (err) {
+      console.warn("Fehler beim Löschen der Referenzdatei aus IndexedDB:", err);
+      return false;
+    }
+  }
+
+  async function restoreSavedReferenceFile() {
+    try {
+      const saved = await loadRefFileFromStorage();
+      if (saved && saved.buffer) {
+        const wb = new ExcelJS.Workbook();
+        await wb.xlsx.load(saved.buffer);
+        state.refWorkbook = wb;
+        state.refFileName = saved.fileName || "Referenz_Stammdaten.xlsx";
+
+        if (refFilename) refFilename.textContent = state.refFileName;
+        populateSheetSelect(selectRefSheet, wb.worksheets);
+
+        if (saved.selectedSheet && wb.worksheets.some(ws => ws.name === saved.selectedSheet)) {
+          selectRefSheet.value = saved.selectedSheet;
+        }
+        state.currentRefSheet = selectRefSheet.value;
+
+        if (refFileInfo) refFileInfo.classList.remove("hidden");
+        const dropContent = dropRef ? dropRef.querySelector(".drop-zone-content") : null;
+        if (dropContent) dropContent.classList.add("hidden");
+
+        if (refStorageBadge) {
+          refStorageBadge.textContent = "Im Browser gespeichert";
+          refStorageBadge.className = "badge badge-ok";
+        }
+        if (refInfoDetail) {
+          refInfoDetail.textContent = "💾 Im Browser gespeichert (bleibt dauerhaft erhalten)";
+        }
+
+        checkReadyForConfig();
+        console.log(`Referenzdatei "${state.refFileName}" aus dem Browser-Speicher wiederhergestellt.`);
+      }
+    } catch (err) {
+      console.warn("Konnte gespeicherte Referenzdatei nicht laden:", err);
+    }
+  }
+
   // --- Drag & Drop Einrichten ---
   setupDropZone(dropRef, inputRef, async (file) => {
-    state.refFileName = file.name;
-    const arrayBuffer = await file.arrayBuffer();
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(arrayBuffer);
-    state.refWorkbook = wb;
+    try {
+      state.refFileName = file.name;
+      const arrayBuffer = await file.arrayBuffer();
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(arrayBuffer);
+      state.refWorkbook = wb;
 
-    refFilename.textContent = file.name;
-    populateSheetSelect(selectRefSheet, wb.worksheets);
-    state.currentRefSheet = selectRefSheet.value;
-    refFileInfo.classList.remove("hidden");
-    dropRef.querySelector(".drop-zone-content").classList.add("hidden");
+      refFilename.textContent = file.name;
+      populateSheetSelect(selectRefSheet, wb.worksheets);
+      state.currentRefSheet = selectRefSheet.value;
+      refFileInfo.classList.remove("hidden");
+      dropRef.querySelector(".drop-zone-content").classList.add("hidden");
 
-    checkReadyForConfig();
-    showToast(`Referenzdatei "${file.name}" geladen.`);
+      if (refStorageBadge) {
+        refStorageBadge.textContent = "Im Browser gespeichert";
+        refStorageBadge.className = "badge badge-ok";
+      }
+      if (refInfoDetail) {
+        refInfoDetail.textContent = "💾 Im Browser gespeichert (bleibt dauerhaft erhalten)";
+      }
+
+      await saveRefFileToStorage(file.name, arrayBuffer, state.currentRefSheet);
+
+      checkReadyForConfig();
+      showToast(`Referenzdatei "${file.name}" geladen und im Browser gespeichert.`);
+    } catch (err) {
+      console.error(err);
+      alert("Fehler beim Laden der Referenzdatei: " + err.message);
+    }
   });
 
   setupDropZone(dropTgt, inputTgt, async (file) => {
-    state.targetFileName = file.name;
-    const arrayBuffer = await file.arrayBuffer();
-    state.lastTargetBuffer = arrayBuffer;
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(arrayBuffer);
-    state.targetWorkbook = wb;
+    try {
+      state.targetFileName = file.name;
+      const arrayBuffer = await file.arrayBuffer();
+      state.lastTargetBuffer = arrayBuffer;
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(arrayBuffer);
+      state.targetWorkbook = wb;
 
-    tgtFilename.textContent = file.name;
-    populateSheetSelect(selectTgtSheet, wb.worksheets);
-    state.currentTargetSheet = selectTgtSheet.value;
-    tgtFileInfo.classList.remove("hidden");
-    dropTgt.querySelector(".drop-zone-content").classList.add("hidden");
+      tgtFilename.textContent = file.name;
+      populateSheetSelect(selectTgtSheet, wb.worksheets);
+      state.currentTargetSheet = selectTgtSheet.value;
+      tgtFileInfo.classList.remove("hidden");
+      dropTgt.querySelector(".drop-zone-content").classList.add("hidden");
 
-    checkReadyForConfig();
-    showToast(`Prüfdatei "${file.name}" geladen.`);
+      if (tgtStatusBadge) {
+        tgtStatusBadge.textContent = "Bereit zur Prüfung";
+        tgtStatusBadge.className = "badge badge-ok";
+        tgtStatusBadge.style.display = "inline-block";
+      }
+
+      checkReadyForConfig();
+      showToast(`Prüfdatei "${file.name}" geladen.`);
+    } catch (err) {
+      console.error(err);
+      alert("Fehler beim Laden der Prüfdatei: " + err.message);
+    }
   });
 
   // --- Mitarbeiter-Stammdaten: Browser-Speicher & Dropzone ---
@@ -311,6 +481,42 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  if (btnChangeRef && inputRef) {
+    btnChangeRef.addEventListener("click", (e) => {
+      e.stopPropagation();
+      inputRef.click();
+    });
+  }
+
+  if (btnClearRef) {
+    btnClearRef.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (!confirm("Möchten Sie die gespeicherte Referenzdatei wirklich aus dem Browser löschen?")) return;
+      await deleteRefFileFromStorage();
+      state.refWorkbook = null;
+      state.refFileName = "";
+      state.currentRefSheet = "";
+      if (refFilename) refFilename.textContent = "";
+      if (selectRefSheet) selectRefSheet.innerHTML = "";
+      if (refFileInfo) refFileInfo.classList.add("hidden");
+      const dropContent = dropRef ? dropRef.querySelector(".drop-zone-content") : null;
+      if (dropContent) dropContent.classList.remove("hidden");
+      if (refStorageBadge) {
+        refStorageBadge.textContent = "Nicht geladen";
+        refStorageBadge.className = "badge badge-secondary";
+      }
+      if (configSection) configSection.classList.add("hidden");
+      showToast("Referenzdatei aus dem Browser gelöscht.");
+    });
+  }
+
+  if (btnChangeTgt && inputTgt) {
+    btnChangeTgt.addEventListener("click", (e) => {
+      e.stopPropagation();
+      inputTgt.click();
+    });
+  }
+
   if (btnDownloadStaffTemplate) {
     btnDownloadStaffTemplate.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -325,18 +531,32 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Gespeicherte Mitarbeiter beim Start aus localStorage laden
+  // Gespeicherte Referenzdatei & Mitarbeiter beim Start aus Browser-Speicher laden
+  restoreSavedReferenceFile();
   loadStaffFromStorage();
 
   function setupDropZone(dropZone, fileInput, onFileLoaded) {
+    if (!dropZone || !fileInput) return;
+
     dropZone.addEventListener("click", (e) => {
-      if (e.target.tagName.toLowerCase() === "select" || e.target.tagName.toLowerCase() === "option") return;
+      // Nicht auslösen, falls ein Button, Select, Label, Link oder das Info-Feld angeklickt wurde
+      if (
+        e.target.closest("button") ||
+        e.target.closest("select") ||
+        e.target.closest("option") ||
+        e.target.closest("label") ||
+        e.target.closest("a") ||
+        e.target.closest(".file-info")
+      ) {
+        return;
+      }
       fileInput.click();
     });
 
     fileInput.addEventListener("change", () => {
-      if (fileInput.files.length > 0) {
+      if (fileInput.files && fileInput.files.length > 0) {
         onFileLoaded(fileInput.files[0]);
+        fileInput.value = "";
       }
     });
 
@@ -357,7 +577,10 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     dropZone.addEventListener("drop", (e) => {
-      if (e.dataTransfer.files.length > 0) {
+      e.preventDefault();
+      e.stopPropagation();
+      dropZone.classList.remove("dragover");
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
         onFileLoaded(e.dataTransfer.files[0]);
       }
     });
@@ -373,8 +596,9 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  selectRefSheet.addEventListener("change", (e) => {
+  selectRefSheet.addEventListener("change", async (e) => {
     state.currentRefSheet = e.target.value;
+    await updateRefSheetInStorage(e.target.value);
     updateMapping();
   });
 
@@ -1577,8 +1801,8 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Event Listener für Spaltenauswahl der Arbeitszeiten
-  [selectTsDateCol, selectTsHoursCol, selectTsResourceCol].forEach(sel => {
+  // Event Listener für Spaltenauswahl & Filter der Arbeitszeiten
+  [selectTsDateCol, selectTsHoursCol, selectTsResourceCol, chkTsOnlyStaff].forEach(sel => {
     if (sel) {
       sel.addEventListener("change", () => {
         if (state.targetWorkbook && state.currentTargetSheet) {
@@ -1701,6 +1925,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const resColIdx = parseInt(selectTsResourceCol?.value, 10) || 3;
 
+    const onlyStaff = chkTsOnlyStaff ? chkTsOnlyStaff.checked : true;
+    const hasStaffList = state.staffList && state.staffList.length > 0;
+
+    let skippedNonStaffRows = 0;
+    const skippedNonStaffResources = new Set();
+
     // Maps für Aggregation
     const dateMap = new Map();
     const empMap = new Map();
@@ -1727,11 +1957,19 @@ document.addEventListener("DOMContentLoaded", () => {
       const unpaddedRes = rawRes.replace(/^0+/, "");
 
       // Mitarbeiter-Name aus Stammdaten ermitteln
-      let empName = state.staffMap[paddedRes] || state.staffMap[unpaddedRes] || state.staffMap[rawRes];
-      const hasCustomName = Boolean(empName);
-      if (!empName) {
-        empName = `Ressource ${paddedRes}`;
+      const empNameFromMap = state.staffMap[paddedRes] || state.staffMap[unpaddedRes] || state.staffMap[rawRes];
+      const isKnownWorker = Boolean(empNameFromMap);
+
+      // WICHTIG: Wenn Mitarbeiterdatei hinterlegt ist und Filter aktiv ist,
+      // ausschließlich echte Arbeiter anzeigen! Fremd-/Maschinen-Ressourcen überspringen.
+      if (hasStaffList && onlyStaff && !isKnownWorker) {
+        skippedNonStaffRows++;
+        skippedNonStaffResources.add(rawRes);
+        continue;
       }
+
+      const empName = empNameFromMap || `Ressource ${paddedRes}`;
+      const hasCustomName = Boolean(empNameFromMap);
 
       // 2. Datum ermitteln
       let dateObj = null;
@@ -1805,19 +2043,35 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Status-Badge aktualisieren
     if (tsStaffStatusBadge) {
-      const staffCount = state.staffList ? state.staffList.length : 0;
-      if (staffCount > 0) {
-        tsStaffStatusBadge.className = "badge badge-ok";
-        tsStaffStatusBadge.innerHTML = `👤 ${staffCount} Mitarbeiter verknüpft (im Browser gespeichert)`;
+      if (hasStaffList) {
+        const workerCount = sortedEmployees.length;
+        const totalStaffInList = state.staffList.length;
+        if (onlyStaff) {
+          tsStaffStatusBadge.className = "badge badge-ok";
+          let badgeHtml = `👷 ${workerCount} von ${totalStaffInList} Arbeiter erfasst`;
+          if (skippedNonStaffRows > 0) {
+            const resListStr = Array.from(skippedNonStaffResources).sort().join(", ");
+            badgeHtml += ` • <span title="Ausgeblendete Ressourcen: ${escapeHtml(resListStr)}">🚫 ${skippedNonStaffRows} Buchung(en) Fremd-Ressourcen ausgeblendet (${skippedNonStaffResources.size} Nr.: ${escapeHtml(resListStr)})</span>`;
+          }
+          tsStaffStatusBadge.innerHTML = badgeHtml;
+        } else {
+          tsStaffStatusBadge.className = "badge badge-info";
+          tsStaffStatusBadge.innerHTML = `⚠️ Alle ${sortedEmployees.length} Ressourcen aktiv (inkl. Fremd/Maschinen)`;
+        }
       } else {
         tsStaffStatusBadge.className = "badge badge-leer-ok";
-        tsStaffStatusBadge.innerHTML = `ℹ️ Keine Stammdaten geladen (Ressourcennummern)`;
+        tsStaffStatusBadge.innerHTML = `⚠️ Keine Mitarbeiterdatei geladen (alle Ressourcen werden angezeigt)`;
       }
     }
 
     if (sortedEmployees.length === 0) {
       timesheetThead.innerHTML = `<tr><th class="ts-col-emp">Mitarbeiter / Ressource</th><th>Status</th></tr>`;
-      timesheetTbody.innerHTML = `<tr><td colspan="2" style="text-align: center; padding: 1.5rem; color: var(--text-muted);">Keine Buchungen in der ausgewählten Ressourcenspalte gefunden.</td></tr>`;
+      let emptyMsg = "Keine Buchungen in der ausgewählten Ressourcenspalte gefunden.";
+      if (hasStaffList && onlyStaff && skippedNonStaffRows > 0) {
+        const resListStr = Array.from(skippedNonStaffResources).sort().join(", ");
+        emptyMsg = `Es wurden keine Arbeiter aus der Mitarbeiterdatei gefunden (${skippedNonStaffRows} Buchungen anderer Ressourcen [${resListStr}] ausgeblendet).`;
+      }
+      timesheetTbody.innerHTML = `<tr><td colspan="2" style="text-align: center; padding: 1.5rem; color: var(--text-muted);">${escapeHtml(emptyMsg)}</td></tr>`;
       timesheetTfoot.innerHTML = "";
       timesheetSection.classList.remove("hidden");
       return;
@@ -2164,16 +2418,77 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     const curStaffVal = filterFullStaff.value;
-    filterFullStaff.innerHTML = `<option value="all">Alle Mitarbeiter (${staffCounts.size})</option>`;
+    filterFullStaff.innerHTML = "";
+
+    const hasStaffList = state.staffList && state.staffList.length > 0;
+    const workerKeys = [];
+    const nonWorkerKeys = [];
+
     Array.from(staffCounts.keys()).sort().forEach(res => {
-      const name = state.staffMap[res] || `Ressource ${res}`;
-      const count = staffCounts.get(res);
-      const opt = document.createElement("option");
-      opt.value = res;
-      opt.textContent = `${name} (Nr. ${res}) [${count} Zeilen]`;
-      if (res === curStaffVal) opt.selected = true;
-      filterFullStaff.appendChild(opt);
+      const isKnownWorker = Boolean(state.staffMap[res] || state.staffMap[res.replace(/^0+/, "")]);
+      if (hasStaffList) {
+        if (isKnownWorker) workerKeys.push(res);
+        else nonWorkerKeys.push(res);
+      } else {
+        workerKeys.push(res);
+      }
     });
+
+    const optAll = document.createElement("option");
+    optAll.value = "all";
+    optAll.textContent = `Alle Ressourcen (${staffCounts.size})`;
+    filterFullStaff.appendChild(optAll);
+
+    if (hasStaffList && nonWorkerKeys.length > 0) {
+      const optAllWorkers = document.createElement("option");
+      optAllWorkers.value = "all_staff";
+      optAllWorkers.textContent = `👷 Nur echte Arbeiter (${workerKeys.length})`;
+      filterFullStaff.appendChild(optAllWorkers);
+
+      const optAllNonWorkers = document.createElement("option");
+      optAllNonWorkers.value = "all_non_staff";
+      optAllNonWorkers.textContent = `⚙️ Nur Fremd-/Maschinen-Ressourcen (${nonWorkerKeys.length})`;
+      filterFullStaff.appendChild(optAllNonWorkers);
+
+      const groupWorkers = document.createElement("optgroup");
+      groupWorkers.label = "👷 Arbeiter (aus Stammdaten)";
+      workerKeys.forEach(res => {
+        const name = state.staffMap[res] || state.staffMap[res.replace(/^0+/, "")] || `Arbeiter ${res}`;
+        const count = staffCounts.get(res);
+        const opt = document.createElement("option");
+        opt.value = res;
+        opt.textContent = `${name} (Nr. ${res}) [${count} Zeilen]`;
+        if (res === curStaffVal) opt.selected = true;
+        groupWorkers.appendChild(opt);
+      });
+      filterFullStaff.appendChild(groupWorkers);
+
+      const groupNonWorkers = document.createElement("optgroup");
+      groupNonWorkers.label = "⚙️ Sonstige Ressourcen (Maschinen / Fremd)";
+      nonWorkerKeys.forEach(res => {
+        const count = staffCounts.get(res);
+        const opt = document.createElement("option");
+        opt.value = res;
+        opt.textContent = `Ressource ${res} [${count} Zeilen] (Kein Mitarbeiter)`;
+        if (res === curStaffVal) opt.selected = true;
+        groupNonWorkers.appendChild(opt);
+      });
+      filterFullStaff.appendChild(groupNonWorkers);
+    } else {
+      workerKeys.forEach(res => {
+        const name = state.staffMap[res] || `Ressource ${res}`;
+        const count = staffCounts.get(res);
+        const opt = document.createElement("option");
+        opt.value = res;
+        opt.textContent = `${name} (Nr. ${res}) [${count} Zeilen]`;
+        if (res === curStaffVal) opt.selected = true;
+        filterFullStaff.appendChild(opt);
+      });
+    }
+
+    if (curStaffVal && (curStaffVal === "all" || curStaffVal === "all_staff" || curStaffVal === "all_non_staff" || staffCounts.has(curStaffVal))) {
+      filterFullStaff.value = curStaffVal;
+    }
 
     const curDateVal = filterFullDate.value;
     filterFullDate.innerHTML = `<option value="all">Alle Tage (${dateCounts.size})</option>`;
@@ -2241,8 +2556,14 @@ document.addEventListener("DOMContentLoaded", () => {
         ? String(state.appliedCorrections[cellKeyRes]).trim()
         : WebExcelEngine.extractCellValue(row.getCell(resColIdx).value, row.getCell(resColIdx)).trim();
       const paddedRes = WebExcelEngine.padNumber(rawRes, 4);
+      const unpaddedRes = rawRes.replace(/^0+/, "");
+      const isKnownWorker = Boolean(state.staffMap[paddedRes] || state.staffMap[unpaddedRes] || state.staffMap[rawRes]);
 
-      if (staffFilter !== "all" && paddedRes !== staffFilter && rawRes !== staffFilter) {
+      if (staffFilter === "all_staff") {
+        if (!isKnownWorker) continue;
+      } else if (staffFilter === "all_non_staff") {
+        if (isKnownWorker) continue;
+      } else if (staffFilter !== "all" && paddedRes !== staffFilter && rawRes !== staffFilter && unpaddedRes !== staffFilter) {
         continue;
       }
 
@@ -2536,6 +2857,27 @@ document.addEventListener("DOMContentLoaded", () => {
     refFileInfo.classList.remove("hidden");
     dropRef.querySelector(".drop-zone-content").classList.add("hidden");
 
+    // Falls noch keine Referenzdatei im Browser gespeichert ist, Demo-Referenz speichern
+    const storedRef = await loadRefFileFromStorage();
+    if (!storedRef) {
+      await saveRefFileToStorage(state.refFileName, refBuf, state.currentRefSheet);
+      if (refStorageBadge) {
+        refStorageBadge.textContent = "Im Browser gespeichert";
+        refStorageBadge.className = "badge badge-ok";
+      }
+      if (refInfoDetail) {
+        refInfoDetail.textContent = "💾 Im Browser gespeichert (dauerhaft erhalten)";
+      }
+    } else {
+      if (refStorageBadge) {
+        refStorageBadge.textContent = "Demo aktiv";
+        refStorageBadge.className = "badge badge-warning";
+      }
+      if (refInfoDetail) {
+        refInfoDetail.textContent = "Demo-Daten aktiv (gespeicherte Datei bleibt erhalten)";
+      }
+    }
+
     // 2. Prüfdatei-Arbeitsmappe (mit Datum, Menge/Stunden und Ressourcen)
     const tgtWb = new ExcelJS.Workbook();
     const tgtWs = tgtWb.addWorksheet("Report");
@@ -2554,7 +2896,8 @@ document.addEventListener("DOMContentLoaded", () => {
       ["16.09.2026", "10023", "120",  7.5, "78",   "4012345000103"], // Res '120' -> wird '0120'; Leistung '78' OK; 7.5 Std für Anna Schmidt
       ["16.09.2026", "10042", "0400", 8.0, "54",   "4012345000104"], // Artikel Zahlendreher (10042); Leistung Zahlendreher ('54'); 8 Std Sarah Fischer
       ["17.09.2026", "10025", "0500", 6.0, "1100", "4012345000150"], // EAN Zahlendreher; 6 Std Thomas Becker
-      ["17.09.2026", "99999", "0700", 8.5, "",     "4012345000107"]  // 99999 Nicht existent; 8.5 Std Stefan Hoffmann
+      ["17.09.2026", "99999", "0700", 8.5, "",     "4012345000107"], // 99999 Nicht existent; 8.5 Std Stefan Hoffmann
+      ["17.09.2026", "10026", "9900", 4.0, "1200", "4012345000106"]  // Fremd-Ressource 9900 (Maschine/Bagger - kein Mitarbeiter)
     ];
 
     tgtRows.forEach(r => tgtWs.addRow(r));
@@ -2567,6 +2910,12 @@ document.addEventListener("DOMContentLoaded", () => {
     state.currentTargetSheet = selectTgtSheet.value;
     tgtFileInfo.classList.remove("hidden");
     dropTgt.querySelector(".drop-zone-content").classList.add("hidden");
+
+    if (tgtStatusBadge) {
+      tgtStatusBadge.textContent = "Bereit zur Prüfung";
+      tgtStatusBadge.className = "badge badge-ok";
+      tgtStatusBadge.style.display = "inline-block";
+    }
 
     btnLoadDemo.disabled = false;
     btnLoadDemo.innerHTML = `<span class="icon">✨</span> Demo-Dateien laden`;
