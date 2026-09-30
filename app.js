@@ -31,7 +31,8 @@ document.addEventListener("DOMContentLoaded", () => {
     lastTargetBuffer: null,
     staffList: [],
     staffMap: {},
-    timesheetData: null
+    timesheetData: null,
+    lastInsertedRow: null
   };
 
   // DOM Elemente
@@ -112,6 +113,20 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnResetFullFilters = document.getElementById("btn-reset-full-filters");
   const fulltableThead = document.getElementById("fulltable-thead");
   const fulltableTbody = document.getElementById("fulltable-tbody");
+
+  // Zeile nachtragen / Einfügen Modal DOM
+  const modalInsertRow = document.getElementById("modal-insert-row");
+  const btnCloseInsertModal = document.getElementById("btn-close-insert-modal");
+  const btnCancelInsertRow = document.getElementById("btn-cancel-insert-row");
+  const btnConfirmInsertRow = document.getElementById("btn-confirm-insert-row");
+  const btnOpenInsertRowActionbar = document.getElementById("btn-open-insert-row-actionbar");
+  const btnOpenInsertRowFulltable = document.getElementById("btn-open-insert-row-fulltable");
+  const insertTargetRowSelect = document.getElementById("insert-target-row-select");
+  const insertTemplateRowSelect = document.getElementById("insert-template-row-select");
+  const insertRowSearch = document.getElementById("insert-row-search");
+  const insertAfterRowContainer = document.getElementById("insert-after-row-container");
+  const insertAutoHint = document.getElementById("insert-auto-hint");
+  const insertFieldsGrid = document.getElementById("insert-fields-grid");
 
   // --- IndexedDB Speicher für die Referenzdatei ---
   const IDB_NAME = "ExcelPrueferStorage";
@@ -3094,8 +3109,13 @@ document.addEventListener("DOMContentLoaded", () => {
       if (rowHasError) rowIndicator = `<span title="Enthält Prüffehler" style="color:#ef4444; font-size:0.8rem;">⚠️</span>`;
       else if (rowHasCorrection) rowIndicator = `<span title="Manuell korrigiert" style="color:#10b981; font-size:0.8rem;">✏️</span>`;
 
-      tbodyHtml += `<tr>`;
-      tbodyHtml += `<td class="col-sticky-row">${r} ${rowIndicator}</td>`;
+      const isJustInserted = (state.lastInsertedRow === r);
+      const rowClass = isJustInserted ? "row-just-inserted" : "";
+      tbodyHtml += `<tr class="${rowClass}">`;
+      tbodyHtml += `<td class="col-sticky-row">
+        <span>${r}</span> ${rowIndicator}
+        <button type="button" class="btn-row-add-below" data-row="${r}" title="Zeile darunter einfügen (Werte als Vorlage übernehmen)">➕</button>
+      </td>`;
 
       for (let c = 1; c <= colCount; c++) {
         const cellKey = `${r}_${c}`;
@@ -3153,6 +3173,25 @@ document.addEventListener("DOMContentLoaded", () => {
         makeCellEditable(td);
       });
     });
+
+    // Event-Listener für Zeilen-Plus-Buttons
+    fulltableTbody.querySelectorAll(".btn-row-add-below").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const rIdx = parseInt(btn.dataset.row, 10);
+        openInsertRowModal(rIdx);
+      });
+    });
+
+    if (state.lastInsertedRow) {
+      const justInsertedTr = fulltableTbody.querySelector(".row-just-inserted");
+      if (justInsertedTr) {
+        setTimeout(() => {
+          justInsertedTr.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, 100);
+      }
+      state.lastInsertedRow = null;
+    }
   }
 
   function makeCellEditable(td) {
@@ -3285,6 +3324,475 @@ document.addEventListener("DOMContentLoaded", () => {
       if (filterFullSearch) filterFullSearch.value = "";
       renderFullExcelTable();
       showToast("Filter zurückgesetzt: Alle Zeilen werden angezeigt.");
+    });
+  }
+
+  // ==============================================================================
+  // Zeile nachtragen / Fehlende Einträge einfügen
+  // ==============================================================================
+
+  function closeInsertRowModal() {
+    if (modalInsertRow) modalInsertRow.classList.add("hidden");
+  }
+
+  function openInsertRowModal(sourceRowIdx = null) {
+    if (!state.targetWorkbook || !state.currentTargetSheet) {
+      alert("Bitte laden Sie zuerst eine zu prüfende Excel-Datei.");
+      return;
+    }
+    const ws = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+    if (!ws) {
+      alert("Das ausgewählte Arbeitsblatt konnte nicht gefunden werden.");
+      return;
+    }
+
+    const headerRow = ws.getRow(1);
+    let colCount = ws.columnCount;
+    headerRow.eachCell((cell, colNum) => {
+      if (colNum > colCount) colCount = colNum;
+    });
+
+    const tgtHeaders = [];
+    for (let c = 1; c <= colCount; c++) {
+      const headerCell = headerRow.getCell(c);
+      const colName = WebExcelEngine.extractCellValue(headerCell.value, headerCell) || `Spalte ${getColLetter(c)}`;
+      tgtHeaders.push({
+        colNum: c,
+        letter: getColLetter(c),
+        name: colName
+      });
+    }
+
+    const resColIdx = parseInt(selectTsResourceCol?.value, 10) || 3;
+    const dateColIdx = parseInt(selectTsDateCol?.value, 10) || 1;
+    const hoursColIdx = parseInt(selectTsHoursCol?.value, 10) || null;
+
+    // 1. Dropdowns für Zeilenauswahl & Vorlage aufbauen
+    const maxRows = Math.max(ws.rowCount || 0, ws.actualRowCount || 0, (ws._rows ? ws._rows.length - 1 : 0));
+    const rowOptions = [];
+
+    for (let r = 2; r <= maxRows; r++) {
+      const row = ws.getRow(r);
+      if (!row) continue;
+      let hasData = false;
+      row.eachCell(() => { hasData = true; });
+      if (!hasData) continue;
+
+      let dateDisp = "";
+      if (dateColIdx) {
+        const cell = row.getCell(dateColIdx);
+        const dObj = parseRowDate(cell.value, cell);
+        dateDisp = dObj ? dObj.displayDate : WebExcelEngine.extractCellValue(cell.value, cell);
+      }
+      let resVal = WebExcelEngine.extractCellValue(row.getCell(resColIdx).value, row.getCell(resColIdx)).replace(/[,.]0+$/, "").trim();
+      const staffName = getStaffName(resVal);
+      const resDisp = staffName ? `${resVal} (${staffName})` : (resVal ? `Nr. ${resVal}` : "—");
+
+      // Weitere Spalte (z. B. Auftrag/Artikel)
+      let otherColVal = "";
+      for (let c = 1; c <= colCount; c++) {
+        if (c !== dateColIdx && c !== resColIdx && c !== hoursColIdx) {
+          const v = WebExcelEngine.extractCellValue(row.getCell(c).value, row.getCell(c)).trim();
+          if (v) {
+            otherColVal = v;
+            break;
+          }
+        }
+      }
+
+      const label = `Zeile ${r}: ${dateDisp ? '[' + dateDisp + '] ' : ''}MA: ${resDisp}${otherColVal ? ' | ' + otherColVal : ''}`;
+      rowOptions.push({ rowIdx: r, label: label });
+    }
+
+    // Zeilenauswahl für Einfüge-Position füllen
+    if (insertTargetRowSelect) {
+      insertTargetRowSelect.innerHTML = rowOptions.map(opt => `<option value="${opt.rowIdx}">${escapeHtml(opt.label)}</option>`).join("");
+      if (sourceRowIdx && rowOptions.some(o => o.rowIdx === sourceRowIdx)) {
+        insertTargetRowSelect.value = sourceRowIdx;
+      } else if (rowOptions.length > 0) {
+        insertTargetRowSelect.value = rowOptions[rowOptions.length - 1].rowIdx;
+      }
+    }
+
+    // Dropdown für Vorlage füllen
+    if (insertTemplateRowSelect) {
+      insertTemplateRowSelect.innerHTML = `<option value="">-- Keine Vorlage (neu ausfüllen) --</option>` +
+        rowOptions.map(opt => `<option value="${opt.rowIdx}">${escapeHtml(opt.label)}</option>`).join("");
+      if (sourceRowIdx && rowOptions.some(o => o.rowIdx === sourceRowIdx)) {
+        insertTemplateRowSelect.value = sourceRowIdx;
+      } else {
+        insertTemplateRowSelect.value = "";
+      }
+    }
+
+    // 2. Eingabefelder dynamisch rendern
+    if (insertFieldsGrid) {
+      let fieldsHtml = "";
+      tgtHeaders.forEach(h => {
+        const c = h.colNum;
+        const isDate = (c === dateColIdx);
+        const isRes = (c === resColIdx);
+        const isHours = (c === hoursColIdx);
+
+        fieldsHtml += `<div class="field-item">`;
+        fieldsHtml += `<label for="modal-field-${c}"><span>${escapeHtml(h.name)}</span> <span class="field-col-tag">Spalte ${h.letter}</span></label>`;
+
+        if (isDate) {
+          fieldsHtml += `
+            <div style="display: flex; gap: 0.35rem; align-items: center;">
+              <input type="date" class="form-input form-input-sm insert-field-val" data-col="${c}" id="modal-field-${c}" style="flex: 1;">
+              <button type="button" class="btn btn-secondary btn-sm btn-quick-today" style="padding: 2px 7px; font-size: 0.75rem;" title="Heutiges Datum setzen">Heute</button>
+            </div>
+          `;
+        } else if (isRes) {
+          let staffOpts = `<option value="">-- Bitte wählen --</option>`;
+          if (state.staffList && state.staffList.length > 0) {
+            state.staffList.forEach(s => {
+              staffOpts += `<option value="${escapeHtml(s.resource)}">${escapeHtml(s.resource)} - ${escapeHtml(s.name)}</option>`;
+            });
+          }
+          staffOpts += `<option value="__custom__">✏️ Andere Nummer manuell eingeben...</option>`;
+
+          fieldsHtml += `
+            <div>
+              <select class="form-select form-select-sm insert-field-val" data-col="${c}" id="modal-field-${c}">
+                ${staffOpts}
+              </select>
+              <input type="text" class="form-input form-input-sm insert-custom-res" id="modal-field-${c}-custom" placeholder="Nummer eingeben..." style="display: none; margin-top: 4px;">
+            </div>
+          `;
+        } else if (isHours) {
+          fieldsHtml += `
+            <input type="number" step="0.25" min="0" max="24" class="form-input form-input-sm insert-field-val" data-col="${c}" id="modal-field-${c}" placeholder="z. B. 8.0">
+          `;
+        } else {
+          fieldsHtml += `
+            <input type="text" class="form-input form-input-sm insert-field-val" data-col="${c}" id="modal-field-${c}">
+          `;
+        }
+        fieldsHtml += `</div>`;
+      });
+      insertFieldsGrid.innerHTML = fieldsHtml;
+
+      // Event listener für Quick "Heute" Button
+      insertFieldsGrid.querySelectorAll(".btn-quick-today").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const inp = btn.previousElementSibling;
+          if (inp && inp.type === "date") {
+            const now = new Date();
+            inp.value = now.toISOString().split("T")[0];
+          }
+        });
+      });
+
+      // Event listener für Manuelle Nummer bei Mitarbeiter
+      const resSelect = document.getElementById(`modal-field-${resColIdx}`);
+      const resCustom = document.getElementById(`modal-field-${resColIdx}-custom`);
+      if (resSelect && resCustom) {
+        resSelect.addEventListener("change", () => {
+          if (resSelect.value === "__custom__") {
+            resCustom.style.display = "block";
+            resCustom.focus();
+          } else {
+            resCustom.style.display = "none";
+          }
+        });
+      }
+    }
+
+    // 3. Vorlagen-Funktion verknüpfen
+    function applyTemplateValues(rowIdx) {
+      if (!rowIdx) return;
+      const tRow = ws.getRow(rowIdx);
+      if (!tRow) return;
+
+      tgtHeaders.forEach(h => {
+        const c = h.colNum;
+        const inputEl = document.getElementById(`modal-field-${c}`);
+        if (!inputEl) return;
+
+        const cell = tRow.getCell(c);
+        if (c === dateColIdx) {
+          const dObj = parseRowDate(cell.value, cell);
+          if (dObj && dObj.isoKey) {
+            inputEl.value = dObj.isoKey;
+          } else {
+            const raw = WebExcelEngine.extractCellValue(cell.value, cell);
+            const pd = WebExcelEngine.parseDateValue(raw);
+            if (pd) inputEl.value = pd.toISOString().split("T")[0];
+          }
+        } else if (c === resColIdx) {
+          const raw = WebExcelEngine.extractCellValue(cell.value, cell).replace(/[,.]0+$/, "").trim();
+          const padded = (/^\d+$/.test(raw) && raw.length < 4) ? WebExcelEngine.padNumber(raw, 4) : raw;
+          let found = false;
+          for (let opt of inputEl.options) {
+            if (opt.value === raw || opt.value === padded) {
+              inputEl.value = opt.value;
+              found = true;
+              break;
+            }
+          }
+          const customEl = document.getElementById(`modal-field-${c}-custom`);
+          if (!found) {
+            inputEl.value = "__custom__";
+            if (customEl) {
+              customEl.style.display = "block";
+              customEl.value = raw;
+            }
+          } else if (customEl) {
+            customEl.style.display = "none";
+          }
+        } else {
+          const val = WebExcelEngine.extractCellValue(cell.value, cell);
+          inputEl.value = (val !== null && val !== undefined) ? String(val) : "";
+        }
+      });
+    }
+
+    if (insertTemplateRowSelect) {
+      insertTemplateRowSelect.onchange = (e) => {
+        const selVal = parseInt(e.target.value, 10);
+        if (selVal) applyTemplateValues(selVal);
+      };
+    }
+
+    // 4. Modus und Initialwerte setzen
+    const radioAuto = document.querySelector('input[name="insert-pos-mode"][value="auto"]');
+    const radioAfter = document.querySelector('input[name="insert-pos-mode"][value="after_row"]');
+    if (sourceRowIdx) {
+      if (radioAfter) radioAfter.checked = true;
+      if (insertAfterRowContainer) insertAfterRowContainer.classList.remove("hidden");
+      if (insertAutoHint) insertAutoHint.classList.add("hidden");
+      applyTemplateValues(sourceRowIdx);
+    } else {
+      if (radioAuto) radioAuto.checked = true;
+      if (insertAfterRowContainer) insertAfterRowContainer.classList.add("hidden");
+      if (insertAutoHint) insertAutoHint.classList.remove("hidden");
+
+      // Falls in Gesamt-Tabelle nach Datum oder Mitarbeiter gefiltert ist: vorausfüllen!
+      if (filterFullDate && filterFullDate.value && filterFullDate.value !== "all") {
+        const dateInput = document.getElementById(`modal-field-${dateColIdx}`);
+        if (dateInput) dateInput.value = filterFullDate.value;
+      }
+      if (filterFullStaff && filterFullStaff.value && filterFullStaff.value !== "all" && filterFullStaff.value !== "all_staff" && filterFullStaff.value !== "all_non_staff") {
+        const resInput = document.getElementById(`modal-field-${resColIdx}`);
+        if (resInput) {
+          for (let opt of resInput.options) {
+            if (opt.value === filterFullStaff.value) {
+              resInput.value = opt.value;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    if (modalInsertRow) modalInsertRow.classList.remove("hidden");
+  }
+
+  function executeInsertRow() {
+    if (!state.targetWorkbook || !state.currentTargetSheet) return;
+    const ws = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+    if (!ws) return;
+
+    const headerRow = ws.getRow(1);
+    let colCount = ws.columnCount;
+    headerRow.eachCell((cell, colNum) => {
+      if (colNum > colCount) colCount = colNum;
+    });
+
+    const resColIdx = parseInt(selectTsResourceCol?.value, 10) || 3;
+    const dateColIdx = parseInt(selectTsDateCol?.value, 10) || 1;
+    const hoursColIdx = parseInt(selectTsHoursCol?.value, 10) || null;
+
+    // 1. Spaltenwerte einsammeln
+    const rowValues = [];
+    let enteredDateIso = "";
+    let enteredRes = "";
+
+    for (let c = 1; c <= colCount; c++) {
+      const inputEl = document.getElementById(`modal-field-${c}`);
+      let val = inputEl ? inputEl.value.trim() : "";
+
+      if (c === resColIdx && val === "__custom__") {
+        const customEl = document.getElementById(`modal-field-${c}-custom`);
+        val = customEl ? customEl.value.trim() : "";
+      }
+
+      if (c === dateColIdx) {
+        if (val) {
+          enteredDateIso = val;
+          // Format als DD.MM.YYYY string
+          const parts = val.split("-");
+          if (parts.length === 3) {
+            val = `${parts[2]}.${parts[1]}.${parts[0]}`;
+          }
+        }
+      } else if (c === resColIdx) {
+        enteredRes = val.replace(/[,.]0+$/, "").trim();
+        if (/^\d{1,4}$/.test(enteredRes)) {
+          val = WebExcelEngine.padNumber(enteredRes, 4);
+        }
+      } else if (c === hoursColIdx && val) {
+        const parsedH = parseFloat(val.replace(",", "."));
+        if (!isNaN(parsedH)) val = parsedH;
+      }
+
+      rowValues.push(val !== "" ? val : null);
+    }
+
+    // 2. Zielposition ermitteln
+    const mode = document.querySelector('input[name="insert-pos-mode"]:checked')?.value || "auto";
+    const maxRows = Math.max(ws.rowCount || 0, ws.actualRowCount || 0, (ws._rows ? ws._rows.length - 1 : 0));
+    let insertAtRowIndex = maxRows + 1;
+
+    if (mode === "end") {
+      insertAtRowIndex = maxRows + 1;
+    } else if (mode === "after_row") {
+      const selectedRow = parseInt(insertTargetRowSelect?.value, 10);
+      if (selectedRow && selectedRow >= 1 && selectedRow <= maxRows) {
+        insertAtRowIndex = selectedRow + 1;
+      } else {
+        insertAtRowIndex = maxRows + 1;
+      }
+    } else {
+      // Auto-Modus: Chronologisch nach Datum & Mitarbeiter
+      let foundDateMatchLast = null;
+      let foundStaffAndDateMatchLast = null;
+      let foundFirstLaterDate = null;
+
+      for (let r = 2; r <= maxRows; r++) {
+        const row = ws.getRow(r);
+        if (!row) continue;
+
+        let rowDateIso = "";
+        if (dateColIdx) {
+          const dObj = parseRowDate(row.getCell(dateColIdx).value, row.getCell(dateColIdx));
+          if (dObj && dObj.isoKey) rowDateIso = dObj.isoKey;
+        }
+
+        let rowRes = "";
+        if (resColIdx) {
+          rowRes = WebExcelEngine.extractCellValue(row.getCell(resColIdx).value, row.getCell(resColIdx)).replace(/[,.]0+$/, "").trim();
+        }
+
+        if (enteredDateIso && rowDateIso) {
+          if (rowDateIso === enteredDateIso) {
+            foundDateMatchLast = r;
+            if (enteredRes && (rowRes === enteredRes || (/^\d+$/.test(rowRes) && parseInt(rowRes, 10) === parseInt(enteredRes, 10)))) {
+              foundStaffAndDateMatchLast = r;
+            }
+          } else if (rowDateIso > enteredDateIso && !foundFirstLaterDate) {
+            foundFirstLaterDate = r;
+          }
+        }
+      }
+
+      if (foundStaffAndDateMatchLast) {
+        insertAtRowIndex = foundStaffAndDateMatchLast + 1;
+      } else if (foundDateMatchLast) {
+        insertAtRowIndex = foundDateMatchLast + 1;
+      } else if (foundFirstLaterDate) {
+        insertAtRowIndex = foundFirstLaterDate;
+      } else {
+        insertAtRowIndex = maxRows + 1;
+      }
+    }
+
+    // 3. Zeile in Worksheet einfügen
+    const insertedRow = ws.insertRow(insertAtRowIndex, rowValues);
+
+    // Formate und Ausrichtung setzen
+    for (let c = 1; c <= colCount; c++) {
+      const cell = insertedRow.getCell(c);
+      if (c === dateColIdx) {
+        cell.numFmt = "DD.MM.YYYY";
+        cell.alignment = { horizontal: "center", vertical: "middle" };
+      } else if (c === resColIdx) {
+        if (/^\d{1,4}$/.test(String(cell.value || "").trim())) {
+          cell.numFmt = "0000";
+        }
+        cell.alignment = { horizontal: "center", vertical: "middle" };
+      } else if (c === hoursColIdx && typeof cell.value === "number") {
+        cell.numFmt = "#,##0.0";
+        cell.alignment = { horizontal: "right", vertical: "middle" };
+      }
+    }
+
+    // 4. Manuelle Korrekturen anpassen (Zeilen >= insertAtRowIndex verschieben sich um +1)
+    const updatedCorrections = {};
+    for (const [key, val] of Object.entries(state.appliedCorrections || {})) {
+      const parts = key.split("_");
+      const r = parseInt(parts[0], 10);
+      const c = parseInt(parts[1], 10);
+      if (r >= insertAtRowIndex) {
+        updatedCorrections[`${r + 1}_${c}`] = val;
+      } else {
+        updatedCorrections[key] = val;
+      }
+    }
+    state.appliedCorrections = updatedCorrections;
+
+    // 5. Modal schließen
+    closeInsertRowModal();
+
+    // 6. Neu analysieren & UI aktualisieren
+    state.lastInsertedRow = insertAtRowIndex;
+    runInspection();
+    populateFullTableFilters();
+    activateTab("fulltable");
+    renderFullExcelTable();
+    if (typeof renderTimesheetMatrix === "function") renderTimesheetMatrix();
+
+    showToast(`✅ Zeile erfolgreich an Position ${insertAtRowIndex} eingefügt!`);
+  }
+
+  // Event Listeners für Zeile nachtragen Modal
+  if (btnCloseInsertModal) btnCloseInsertModal.addEventListener("click", closeInsertRowModal);
+  if (btnCancelInsertRow) btnCancelInsertRow.addEventListener("click", closeInsertRowModal);
+  if (modalInsertRow) {
+    modalInsertRow.addEventListener("click", (e) => {
+      if (e.target === modalInsertRow) closeInsertRowModal();
+    });
+  }
+  if (btnConfirmInsertRow) {
+    btnConfirmInsertRow.addEventListener("click", executeInsertRow);
+  }
+  if (btnOpenInsertRowActionbar) {
+    btnOpenInsertRowActionbar.addEventListener("click", () => openInsertRowModal(null));
+  }
+  if (btnOpenInsertRowFulltable) {
+    btnOpenInsertRowFulltable.addEventListener("click", () => openInsertRowModal(null));
+  }
+
+  document.querySelectorAll('input[name="insert-pos-mode"]').forEach(radio => {
+    radio.addEventListener("change", (e) => {
+      const mode = e.target.value;
+      if (mode === "after_row") {
+        if (insertAfterRowContainer) insertAfterRowContainer.classList.remove("hidden");
+        if (insertAutoHint) insertAutoHint.classList.add("hidden");
+      } else {
+        if (insertAfterRowContainer) insertAfterRowContainer.classList.add("hidden");
+        if (mode === "auto") {
+          if (insertAutoHint) insertAutoHint.classList.remove("hidden");
+        } else {
+          if (insertAutoHint) insertAutoHint.classList.add("hidden");
+        }
+      }
+    });
+  });
+
+  if (insertRowSearch && insertTargetRowSelect) {
+    insertRowSearch.addEventListener("input", () => {
+      const q = insertRowSearch.value.trim().toLowerCase();
+      let matchCount = 0;
+      Array.from(insertTargetRowSelect.options).forEach(opt => {
+        const matches = !q || opt.textContent.toLowerCase().includes(q);
+        opt.style.display = matches ? "" : "none";
+        if (matches) matchCount++;
+      });
+      const countEl = document.getElementById("insert-row-match-count");
+      if (countEl) countEl.textContent = q ? `${matchCount} Treffer` : "";
     });
   }
 

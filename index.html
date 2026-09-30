@@ -255,6 +255,9 @@
           <button id="btn-fix-zahlendreher" class="btn btn-action btn-highlight" title="Nur eindeutige Zahlendreher korrigieren">
             <span class="icon">⚡</span> Nur Zahlendreher korrigieren
           </button>
+          <button id="btn-open-insert-row-actionbar" class="btn btn-action btn-outline" style="border-color: #0284c7; color: #0284c7;" title="Fehlende Zeile / Buchung in die Prüfdatei nachtragen">
+            <span class="icon">➕</span> Zeile nachtragen
+          </button>
           <button id="btn-reset-fixes" class="btn btn-action btn-secondary" title="Alle Korrekturen rückgängig machen">
             <span class="icon">↩️</span> Zurücksetzen
           </button>
@@ -374,10 +377,13 @@
                 Zeige <strong>0</strong> von <strong>0</strong> Zeilen
               </div>
               <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+                <button type="button" id="btn-open-insert-row-fulltable" class="btn btn-primary btn-sm" style="background: #0284c7;">
+                  <span class="icon">➕</span> Zeile nachtragen
+                </button>
                 <button type="button" id="btn-reset-full-filters" class="btn btn-secondary btn-sm">
                   ↩️ Filter zurücksetzen
                 </button>
-                <span class="fulltable-hint">💡 Klick auf eine Zelle, um den Wert direkt zu ändern &amp; zu speichern</span>
+                <span class="fulltable-hint">💡 Klick auf ➕ bei einer Zeile zum Kopieren/Einfügen, oder Klick auf Zelle zum Bearbeiten</span>
               </div>
             </div>
           </div>
@@ -459,6 +465,89 @@
     </section>
 
   </main>
+
+  <!-- Modal: Neue Zeile in Prüfdatei nachtragen -->
+  <div id="modal-insert-row" class="modal-backdrop hidden">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 0.6rem;">
+          <span style="font-size: 1.4rem;">➕</span>
+          <div>
+            <h3 class="modal-title">Zeile in Prüfdatei nachtragen</h3>
+            <p style="font-size: 0.8rem; color: var(--text-muted); margin: 0;">Fügt eine fehlende Zeile mit korrekter Formatierung an die richtige Stelle der Datei ein.</p>
+          </div>
+        </div>
+        <button type="button" id="btn-close-insert-modal" class="modal-close-btn" title="Schließen">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        
+        <!-- Bereich 1: Positionierung -->
+        <div class="modal-section">
+          <div class="modal-section-title">
+            <span>📍</span> <strong>Einfüge-Position in der Datei festlegen</strong>
+          </div>
+
+          <div class="insert-pos-modes">
+            <label class="radio-chip">
+              <input type="radio" name="insert-pos-mode" value="auto" checked>
+              <span>🧭 Automatisch passend einsortieren (nach Datum &amp; Mitarbeiter)</span>
+            </label>
+            <label class="radio-chip">
+              <input type="radio" name="insert-pos-mode" value="after_row">
+              <span>🎯 Direkt nach einer bestimmten Zeile einfügen</span>
+            </label>
+            <label class="radio-chip">
+              <input type="radio" name="insert-pos-mode" value="end">
+              <span>⬇️ Am Dateiende anhängen</span>
+            </label>
+          </div>
+
+          <!-- Selektor für Modus "after_row" -->
+          <div id="insert-after-row-container" class="insert-after-row-box hidden" style="margin-top: 0.75rem;">
+            <div style="display: flex; gap: 0.5rem; margin-bottom: 0.4rem; align-items: center;">
+              <input type="text" id="insert-row-search" class="form-input form-input-sm" placeholder="🔍 Nach Zeile, Datum, Auftrag oder Mitarbeiter filtern..." style="flex: 1;">
+              <span id="insert-row-match-count" style="font-size: 0.78rem; color: var(--text-muted); white-space: nowrap;"></span>
+            </div>
+            <select id="insert-target-row-select" class="form-select form-select-sm" size="5" style="width: 100%; height: 110px; font-family: monospace; font-size: 0.82rem;"></select>
+            <p style="font-size: 0.78rem; color: var(--text-muted); margin-top: 4px;">
+              💡 Die neue Zeile wird direkt unter die hier gewählte Zeile eingefügt.
+            </p>
+          </div>
+
+          <div id="insert-auto-hint" style="font-size: 0.8rem; color: #0284c7; margin-top: 0.5rem; background: #f0f9ff; padding: 6px 10px; border-radius: 4px; border: 1px solid #bae6fd;">
+            ℹ️ <strong>Auto-Modus:</strong> Das System sucht automatisch die richtige Stelle (passend zu Datum und Mitarbeiter) und fügt die Zeile sauber chronologisch ein.
+          </div>
+        </div>
+
+        <!-- Bereich 2: Vorlage kopieren (optional) -->
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; background: #ffffff; padding: 0.65rem 0.85rem; border: 1px dashed var(--border); border-radius: var(--radius-sm); flex-wrap: wrap;">
+          <span style="font-size: 0.82rem; color: var(--text-muted);">📋 Optional: Werte aus bestehender Zeile als Vorlage übernehmen:</span>
+          <select id="insert-template-row-select" class="form-select form-select-sm" style="max-width: 320px;">
+            <option value="">-- Leere Zeile ausfüllen --</option>
+          </select>
+        </div>
+
+        <!-- Bereich 3: Spalten-Eingabefelder -->
+        <div class="modal-section">
+          <div class="modal-section-title">
+            <span>📝</span> <strong>Werte der neuen Zeile eingeben</strong>
+          </div>
+          <div id="insert-fields-grid" class="fields-grid">
+            <!-- Dynamisch für jede Spalte der Datei generiert -->
+          </div>
+        </div>
+
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" id="btn-cancel-insert-row" class="btn btn-secondary">Abbrechen</button>
+        <button type="button" id="btn-confirm-insert-row" class="btn btn-primary" style="background: #059669; border-color: #047857;">
+          <span class="icon">➕</span> Zeile jetzt einfügen
+        </button>
+      </div>
+    </div>
+  </div>
 
   <!-- Toast Benachrichtigung -->
   <div id="toast" class="toast hidden"></div>
