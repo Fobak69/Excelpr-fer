@@ -949,6 +949,26 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  const btnDownloadRef = document.getElementById("btn-download-ref");
+  if (btnDownloadRef) {
+    btnDownloadRef.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (!state.refWorkbook) {
+        showToast("Keine Referenzdatei geladen.");
+        return;
+      }
+      try {
+        const buf = await state.refWorkbook.xlsx.writeBuffer();
+        const baseName = (state.refFileName || "Referenz_Stammdaten").replace(/\.[^/.]+$/, "");
+        downloadBuffer(buf, `${baseName}_AKTUALISIERT.xlsx`);
+        showToast("📥 Aktualisierte Referenzdatei wird heruntergeladen...");
+      } catch (err) {
+        console.error("Fehler beim Herunterladen der Referenzdatei:", err);
+        alert("Fehler beim Herunterladen der Referenzdatei: " + err.message);
+      }
+    });
+  }
+
   if (btnChangeTgt && inputTgt) {
     btnChangeTgt.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -1759,6 +1779,256 @@ document.addEventListener("DOMContentLoaded", () => {
     renderResultsTable();
   });
 
+  // --- Referenzdatei: Wert-Prüfung & Dynamisches Hinzufügen neuer Nummern ---
+  function isValueInReferenceColumn(refColName, val) {
+    if (!state.refWorkbook || !val) return false;
+    const clean = String(val).trim();
+    if (!clean) return false;
+
+    let targetWs = null;
+    let targetColIdx = null;
+
+    if (state.currentRefSheet) {
+      targetWs = state.refWorkbook.getWorksheet(state.currentRefSheet);
+    }
+    if (!targetWs && state.refWorkbook.worksheets.length > 0) {
+      targetWs = state.refWorkbook.worksheets[0];
+    }
+
+    if (targetWs) {
+      targetWs.getRow(1).eachCell((cell, colNum) => {
+        const hVal = WebExcelEngine.extractCellValue(cell.value, cell).trim();
+        if (refColName && hVal.toLowerCase() === refColName.toLowerCase()) {
+          targetColIdx = colNum;
+        }
+      });
+    }
+
+    if (!targetColIdx) {
+      for (const ws of state.refWorkbook.worksheets) {
+        ws.getRow(1).eachCell((cell, colNum) => {
+          const hVal = WebExcelEngine.extractCellValue(cell.value, cell).trim();
+          if (refColName && hVal.toLowerCase() === refColName.toLowerCase()) {
+            targetWs = ws;
+            targetColIdx = colNum;
+          }
+        });
+        if (targetColIdx) break;
+      }
+    }
+
+    if (!targetWs || !targetColIdx) return false;
+
+    const maxRows = Math.max(targetWs.rowCount || 0, targetWs.actualRowCount || 0);
+    const isNum = /^\d+$/.test(clean);
+    const numInt = isNum ? parseInt(clean, 10) : null;
+
+    for (let r = 2; r <= maxRows; r++) {
+      const cell = targetWs.getRow(r).getCell(targetColIdx);
+      const cv = WebExcelEngine.extractCellValue(cell.value, cell).trim();
+      if (!cv) continue;
+      if (cv === clean) return true;
+      if (isNum && /^\d+$/.test(cv) && parseInt(cv, 10) === numInt) return true;
+    }
+    return false;
+  }
+
+  async function addNumberToReferenceFile(refColName, newNumber, optStaffName = null) {
+    try {
+      if (!state.refWorkbook) {
+        alert("Keine Referenzdatei geladen. Bitte laden Sie zuerst eine Referenzdatei in Schritt 1.");
+        return false;
+      }
+
+      const cleanNum = String(newNumber || "").trim();
+      if (!cleanNum) {
+        alert("Bitte geben Sie eine gültige Nummer ein.");
+        return false;
+      }
+
+      // 1. Arbeitsblatt und Spalte ermitteln
+      let targetWs = null;
+      let targetColIdx = null;
+      let targetNameColIdx = null;
+
+      if (state.currentRefSheet) {
+        targetWs = state.refWorkbook.getWorksheet(state.currentRefSheet);
+      }
+      if (!targetWs && state.refWorkbook.worksheets.length > 0) {
+        targetWs = state.refWorkbook.worksheets[0];
+      }
+
+      if (targetWs) {
+        targetWs.getRow(1).eachCell((cell, colNum) => {
+          const hVal = WebExcelEngine.extractCellValue(cell.value, cell).trim();
+          if (refColName && hVal.toLowerCase() === refColName.toLowerCase()) {
+            targetColIdx = colNum;
+          }
+          if (["name", "mitarbeiter", "person", "bezeichnung"].some(k => hVal.toLowerCase().includes(k))) {
+            targetNameColIdx = colNum;
+          }
+        });
+      }
+
+      if (!targetColIdx) {
+        for (const ws of state.refWorkbook.worksheets) {
+          ws.getRow(1).eachCell((cell, colNum) => {
+            const hVal = WebExcelEngine.extractCellValue(cell.value, cell).trim();
+            if (refColName && hVal.toLowerCase() === refColName.toLowerCase()) {
+              targetWs = ws;
+              targetColIdx = colNum;
+            }
+          });
+          if (targetColIdx) break;
+        }
+      }
+
+      if (!targetColIdx && targetWs) {
+        const headerCount = Math.max(targetWs.columnCount || 0, targetWs.actualColumnCount || 0, 1);
+        targetColIdx = headerCount + 1;
+        targetWs.getRow(1).getCell(targetColIdx).value = refColName || "Stammdaten";
+      }
+
+      if (!targetWs || !targetColIdx) {
+        alert(`Konnte die Spalte "${refColName}" in der Referenzdatei nicht lokalisieren.`);
+        return false;
+      }
+
+      const isResourceCol = /ressource|personal|pers|mitarbeiter|worker/i.test(refColName || "");
+
+      // 2. Prüfen, ob die Nummer schon in dieser Spalte existiert
+      const maxRows = Math.max(targetWs.rowCount || 0, targetWs.actualRowCount || 0, (targetWs._rows ? targetWs._rows.length : 0));
+      let alreadyExists = false;
+      let emptyRowIdx = null;
+
+      for (let r = 2; r <= maxRows; r++) {
+        const cell = targetWs.getRow(r).getCell(targetColIdx);
+        const cellVal = WebExcelEngine.extractCellValue(cell.value, cell).trim();
+        if (!cellVal && !emptyRowIdx) {
+          emptyRowIdx = r;
+        }
+        if (cellVal === cleanNum || (/^\d+$/.test(cellVal) && /^\d+$/.test(cleanNum) && parseInt(cellVal, 10) === parseInt(cleanNum, 10))) {
+          alreadyExists = true;
+          break;
+        }
+      }
+
+      // 3. Eintragen
+      if (!alreadyExists) {
+        const insertRowIdx = emptyRowIdx || (maxRows + 1);
+        const row = targetWs.getRow(insertRowIdx);
+        const cell = row.getCell(targetColIdx);
+
+        if (/^\d{1,4}$/.test(cleanNum) && isResourceCol) {
+          cell.value = WebExcelEngine.padNumber(cleanNum, 4);
+          cell.numFmt = "0000";
+        } else if (/^\d+$/.test(cleanNum) && cleanNum.length < 10 && !cleanNum.startsWith("0")) {
+          cell.value = parseInt(cleanNum, 10);
+        } else {
+          cell.value = cleanNum;
+        }
+        cell.alignment = { horizontal: "center", vertical: "middle" };
+
+        if (optStaffName && targetNameColIdx) {
+          const nameCell = row.getCell(targetNameColIdx);
+          nameCell.value = optStaffName;
+        }
+      }
+
+      // 4. Falls Mitarbeiter-Spalte oder Mitarbeiter-Name angegeben:
+      if (isResourceCol || optStaffName) {
+        const staffWs = state.refWorkbook.worksheets.find(w => /personal|mitarbeiter|stamm/i.test(w.name) && w !== targetWs);
+        if (staffWs) {
+          let sResCol = 1, sNameCol = 2;
+          staffWs.getRow(1).eachCell((cell, colNum) => {
+            const hVal = WebExcelEngine.extractCellValue(cell.value, cell).toLowerCase();
+            if (/personal|pers|ressource|mitarbeiter/i.test(hVal)) sResCol = colNum;
+            if (/name|bezeichnung/i.test(hVal)) sNameCol = colNum;
+          });
+          const sMax = Math.max(staffWs.rowCount || 0, staffWs.actualRowCount || 0);
+          let sFound = false;
+          for (let r = 2; r <= sMax; r++) {
+            const c = staffWs.getRow(r).getCell(sResCol);
+            const cv = WebExcelEngine.extractCellValue(c.value, c).trim();
+            if (cv === cleanNum || (/^\d+$/.test(cv) && /^\d+$/.test(cleanNum) && parseInt(cv, 10) === parseInt(cleanNum, 10))) {
+              sFound = true;
+              break;
+            }
+          }
+          if (!sFound) {
+            const newStaffRow = staffWs.getRow(sMax + 1);
+            newStaffRow.getCell(sResCol).value = /^\d{1,4}$/.test(cleanNum) ? WebExcelEngine.padNumber(cleanNum, 4) : cleanNum;
+            if (optStaffName) newStaffRow.getCell(sNameCol).value = optStaffName;
+          }
+        }
+
+        const staffDisplayName = optStaffName || getStaffName(cleanNum) || `Mitarbeiter ${cleanNum}`;
+        registerStaffEntry(cleanNum, staffDisplayName);
+        if (!state.staffList.some(s => s.resource === cleanNum || (parseInt(s.resource, 10) === parseInt(cleanNum, 10)))) {
+          state.staffList.push({
+            resource: /^\d{1,4}$/.test(cleanNum) ? WebExcelEngine.padNumber(cleanNum, 4) : cleanNum,
+            name: staffDisplayName,
+            dept: "Referenzdatei"
+          });
+          saveStaffToStorage(state.staffList);
+        }
+      }
+
+      // 5. In IndexedDB dauerhaft speichern
+      const refBuf = await state.refWorkbook.xlsx.writeBuffer();
+      state.lastRefBuffer = refBuf;
+      await saveRefFileToStorage(state.refFileName || "Referenz_Stammdaten.xlsx", refBuf, state.currentRefSheet);
+
+      // 6. Neu analysieren & Oberflächen aktualisieren
+      extractStaffFromReferenceWorkbook(state.refWorkbook);
+      runInspection({ skipScroll: true, skipToast: true });
+
+      showToast(`✅ "${cleanNum}" wurde dauerhaft in die Referenzdatei (${refColName || 'Stammdaten'}) übernommen!`);
+      return true;
+    } catch (err) {
+      console.error("Fehler beim Hinzufügen der Nummer zur Referenzdatei:", err);
+      alert("Fehler beim Aktualisieren der Referenzdatei: " + err.message);
+      return false;
+    }
+  }
+
+  // Behandelt das Speichern einer manuellen Korrektur inklusive Referenz-Option
+  async function handleManualSaveWithRefOption(targetItem, val, isChecked) {
+    if (!targetItem) return;
+    const refCol = targetItem.ref_col_name || targetItem.col_name;
+    const isResource = /ressource|personal|pers|mitarbeiter|worker/i.test(refCol || "");
+
+    const isInRef = isValueInReferenceColumn(refCol, val);
+    let shouldAddToRef = isChecked;
+
+    if (!shouldAddToRef && !isInRef && val) {
+      const ask = confirm(
+        `Die Nummer "${val}" (${targetItem.col_name}) existiert noch nicht in der Referenzdatei (${refCol}).\n\n` +
+        `Möchten Sie diese Nummer jetzt dauerhaft in die Referenzdatei schreiben, damit sie als gültig anerkannt wird?`
+      );
+      if (ask) {
+        shouldAddToRef = true;
+      }
+    }
+
+    if (shouldAddToRef && val) {
+      let optStaffName = null;
+      if (isResource) {
+        const existingName = getStaffName(val);
+        const enteredName = prompt(
+          `Mitarbeiter-Name für Nummer "${val}" (optional):`,
+          existingName && !existingName.startsWith("Mitarbeiter") ? existingName : ""
+        );
+        if (enteredName !== null && enteredName.trim() !== "") {
+          optStaffName = enteredName.trim();
+        }
+      }
+      await addNumberToReferenceFile(refCol, val, optStaffName);
+    }
+
+    applySingleCorrection(targetItem.id, val);
+  }
+
   // --- Ergebnistabelle Rendern ---
   function renderResultsTable() {
     const query = state.searchQuery;
@@ -1789,6 +2059,9 @@ document.addEventListener("DOMContentLoaded", () => {
       const isCorrected = r.is_corrected;
       const isZahlendreher = (r.status === "ZAHLENDREHER" || r.status === "ZIFFERENTAUSCH");
       const isError = (r.status !== "OK" && r.status !== "OK_LEER");
+      const isRefCandidate = (r.status === "NICHT_EXISTENT" || r.status === "LEER" || r.status === "ZAHLENDREHER" || r.status === "TIPPFEHLER" || r.status.startsWith("ZIFFER_"));
+      const refColDisp = r.ref_col_name || r.col_name;
+      const valForRef = (r.current_value || r.original_value || "").trim();
 
       let rowClass = "";
       if (isCorrected) rowClass = "row-corrected";
@@ -1825,16 +2098,30 @@ document.addEventListener("DOMContentLoaded", () => {
             ${otherChips}
           </div>
         `;
+      } else if (isRefCandidate && valForRef && valForRef !== "—") {
+        suggHtml = `
+          <button type="button" class="btn-quick-add-ref" data-id="${r.id}" data-val="${escapeHtml(valForRef)}" data-col="${escapeHtml(refColDisp)}" title="Diese Nummer als neue gültige Nummer dauerhaft in die Referenzdatei schreiben">
+            <span class="icon">➕</span> In Referenz (${escapeHtml(refColDisp)}) aufnehmen
+          </button>
+        `;
       }
 
       const manualHtml = `
-        <div class="manual-edit-box">
-          <input type="text" class="manual-input ${inputCorrClass}" 
-            data-id="${r.id}" 
-            value="${escapeHtml(r.current_value)}" 
-            placeholder="Nummer eintragen..."
-            title="Nummer manuell anpassen und Enter drücken">
-          <button class="btn-save-manual" data-id="${r.id}" title="Händisch speichern">💾 Speichern</button>
+        <div class="manual-edit-box" style="display: flex; flex-direction: column; align-items: flex-start; gap: 0.3rem;">
+          <div style="display: flex; align-items: center; gap: 0.35rem; width: 100%;">
+            <input type="text" class="manual-input ${inputCorrClass}" 
+              data-id="${r.id}" 
+              value="${escapeHtml(r.current_value)}" 
+              placeholder="Nummer eintragen..."
+              title="Nummer manuell anpassen und Enter drücken">
+            <button class="btn-save-manual" data-id="${r.id}" title="Händisch speichern">💾 Speichern</button>
+          </div>
+          ${isRefCandidate ? `
+            <label class="cb-ref-label" title="Diesen Wert zusätzlich dauerhaft in die Referenzdatei (${escapeHtml(refColDisp)}) schreiben, sodass er sofort als gültig anerkannt wird">
+              <input type="checkbox" class="cb-add-to-ref" data-id="${r.id}">
+              <span class="cb-ref-text">In Referenz übernehmen</span>
+            </label>
+          ` : ''}
         </div>
         ${isCorrected ? '<div style="margin-top: 4px;"><span class="badge badge-corrected">✓ Geändert</span></div>' : ''}
       `;
@@ -1870,21 +2157,59 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     });
 
+    // Event Listener für 1-Klick-Übernahme in Referenzdatei
+    resultsTbody.querySelectorAll(".btn-quick-add-ref").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const id = btn.dataset.id;
+        const val = btn.dataset.val;
+        const col = btn.dataset.col;
+        const targetItem = state.allResults.find(r => r.id === id);
+        if (!targetItem || !val) return;
+
+        const isResource = /ressource|personal|pers|mitarbeiter|worker/i.test(col || "");
+        let optStaffName = null;
+        if (isResource) {
+          const existingName = getStaffName(val);
+          const enteredName = prompt(
+            `Nummer "${val}" als neu in die Referenzdatei (${col}) aufnehmen.\n\nName des Mitarbeiters (optional):`,
+            existingName && !existingName.startsWith("Mitarbeiter") ? existingName : ""
+          );
+          if (enteredName === null) return;
+          if (enteredName.trim() !== "") optStaffName = enteredName.trim();
+        } else {
+          const confirmAdd = confirm(`Möchten Sie die Nummer "${val}" als neue gültige Nummer dauerhaft in die Referenzdatei (${col}) übernehmen?`);
+          if (!confirmAdd) return;
+        }
+
+        await addNumberToReferenceFile(col, val, optStaffName);
+      });
+    });
+
+    // Event Listener für manuelles Speichern (inkl. Referenzdatei-Option)
     resultsTbody.querySelectorAll(".btn-save-manual").forEach(btn => {
-      btn.addEventListener("click", () => {
+      btn.addEventListener("click", async () => {
         const id = btn.dataset.id;
         const input = resultsTbody.querySelector(`.manual-input[data-id="${id}"]`);
+        const chkRef = resultsTbody.querySelector(`.cb-add-to-ref[data-id="${id}"]`);
         if (input) {
-          applySingleCorrection(id, input.value.trim());
+          const val = input.value.trim();
+          const targetItem = state.allResults.find(r => r.id === id);
+          const isChecked = chkRef ? chkRef.checked : false;
+          await handleManualSaveWithRefOption(targetItem, val, isChecked);
         }
       });
     });
 
     resultsTbody.querySelectorAll(".manual-input").forEach(input => {
-      input.addEventListener("keydown", (e) => {
+      input.addEventListener("keydown", async (e) => {
         if (e.key === "Enter") {
-          applySingleCorrection(input.dataset.id, input.value.trim());
+          const id = input.dataset.id;
+          const val = input.value.trim();
+          const targetItem = state.allResults.find(r => r.id === id);
+          const chkRef = resultsTbody.querySelector(`.cb-add-to-ref[data-id="${id}"]`);
+          const isChecked = chkRef ? chkRef.checked : false;
           input.blur();
+          await handleManualSaveWithRefOption(targetItem, val, isChecked);
         }
       });
     });
@@ -1898,12 +2223,29 @@ document.addEventListener("DOMContentLoaded", () => {
     const colIdx = targetItem.col_idx;
     let count = 0;
 
+    let tgtWs = null;
+    if (state.targetWorkbook && state.currentTargetSheet) {
+      tgtWs = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+    }
+
     state.allResults.forEach(r => {
       if (r.id === cellId || (targetItem && r.col_idx === colIdx && r.original_value === origVal)) {
         r.current_value = newVal;
         r.is_corrected = (newVal !== r.original_value);
         state.appliedCorrections[r.id] = newVal;
         count++;
+
+        if (tgtWs) {
+          const cell = tgtWs.getRow(r.row).getCell(r.col_idx);
+          if (/^\d{1,4}$/.test(newVal) && targetItem.col_name && /ressource|mitarbeiter|personal/i.test(targetItem.col_name)) {
+            cell.value = WebExcelEngine.padNumber(newVal, 4);
+            cell.numFmt = "0000";
+          } else if (/^\d+$/.test(newVal) && newVal.length < 10 && !newVal.startsWith("0")) {
+            cell.value = parseInt(newVal, 10);
+          } else {
+            cell.value = newVal;
+          }
+        }
       }
     });
 
@@ -4438,9 +4780,10 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // --- Demo-Dateien direkt im Speicher laden ---
-  btnLoadDemo.addEventListener("click", async () => {
-    btnLoadDemo.disabled = true;
-    btnLoadDemo.innerHTML = `<span class="icon">⏳</span> Erstelle Demo...`;
+  if (btnLoadDemo) {
+    btnLoadDemo.addEventListener("click", async () => {
+      btnLoadDemo.disabled = true;
+      btnLoadDemo.innerHTML = `<span class="icon">⏳</span> Erstelle Demo...`;
 
     // 0. Demo-Mitarbeiter im Browser speichern (falls noch keine gespeichert)
     if (state.staffList.length === 0) {
@@ -4584,6 +4927,7 @@ document.addEventListener("DOMContentLoaded", () => {
     checkReadyForConfig();
     showToast("Demo-Dateien & Mitarbeiter geladen! Klicken Sie auf 'Prüfung starten'.");
   });
+  }
 
   function getColLetter(colIdx) {
     let temp = "";
