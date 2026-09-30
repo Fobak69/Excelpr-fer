@@ -72,7 +72,7 @@
           </div>
         </div>
 
-        <!-- RECHTE SPALTE: Referenzdatei & Mitarbeiterdatei -->
+        <!-- RECHTE SPALTE: Referenz- / Stammdaten-Datei (inkl. Mitarbeiter) -->
         <div class="upload-col-right">
           
           <!-- Referenz- / Stammdaten-Datei -->
@@ -87,14 +87,14 @@
             <div class="drop-zone-content">
               <div class="drop-icon">📗</div>
               <p class="drop-text"><strong>Hier hineinziehen</strong> oder klicken</p>
-              <p class="drop-subtext">Enthält alle gültigen Nummern und Stammdaten</p>
+              <p class="drop-subtext">Stammdaten &amp; Mitarbeiter (Spalte A: Personalnummer, Spalte B: Name)</p>
               <input type="file" id="input-ref" class="file-input" accept=".xlsx,.xls">
             </div>
             <div id="ref-file-info" class="file-info hidden">
               <div class="file-info-icon" style="color: #059669;">✅</div>
               <div class="file-info-text">
                 <strong id="ref-filename">dateiname.xlsx</strong>
-                <p id="ref-info-detail" style="font-size: 0.8rem; color: var(--text-muted); margin: 2px 0 6px 0;">💾 Im Browser gespeichert</p>
+                <p id="ref-info-detail" style="font-size: 0.8rem; color: var(--text-muted); margin: 2px 0 6px 0;">💾 Im Browser gespeichert (inkl. Mitarbeiter)</p>
                 <div class="sheet-select-row" style="margin-bottom: 0.6rem;">
                   <label for="select-ref-sheet">Arbeitsblatt:</label>
                   <select id="select-ref-sheet" class="form-select form-select-sm"></select>
@@ -102,34 +102,6 @@
                 <div class="ref-actions-row">
                   <button type="button" id="btn-change-ref" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 0.8rem;">Neu laden / Ändern</button>
                   <button type="button" id="btn-clear-ref" class="btn btn-outline btn-sm" style="padding: 2px 8px; font-size: 0.8rem; color: #dc2626;" title="Aus dem Browser löschen">Löschen</button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Mitarbeiter-Stammdaten -->
-          <div id="drop-staff" class="drop-card drop-staff">
-            <div class="drop-card-header">
-              <div style="display: flex; align-items: center; gap: 0.5rem;">
-                <span class="step-badge" style="background: #0284c7;">👤</span>
-                <h3>Mitarbeiter-Stammdaten (.xlsx)</h3>
-              </div>
-              <span id="staff-storage-badge" class="badge badge-leer-ok">Optional</span>
-            </div>
-            <div class="drop-zone-content" id="staff-drop-zone-content">
-              <div class="drop-icon">👥</div>
-              <p class="drop-text"><strong>Hier hineinziehen</strong> oder klicken</p>
-              <p class="drop-subtext">Spalte A: Nummer, Spalte B: Name (keine Kopfzeilen nötig)</p>
-              <input type="file" id="input-staff" class="file-input" accept=".xlsx,.xls">
-            </div>
-            <div id="staff-file-info" class="file-info hidden">
-              <div class="file-info-icon" style="color: #0284c7;">👤</div>
-              <div class="file-info-text">
-                <strong id="staff-info-title">Keine Mitarbeiter geladen</strong>
-                <p id="staff-info-detail" style="font-size: 0.8rem; color: var(--text-muted); margin: 2px 0 6px 0;">💾 Im Browser gespeichert</p>
-                <div class="staff-actions-row">
-                  <button type="button" id="btn-change-staff" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 0.8rem;">Neu laden / Ändern</button>
-                  <button type="button" id="btn-clear-staff" class="btn btn-outline btn-sm" style="padding: 2px 8px; font-size: 0.8rem; color: #dc2626;" title="Aus dem Browser löschen">Löschen</button>
                 </div>
               </div>
             </div>

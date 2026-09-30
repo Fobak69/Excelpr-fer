@@ -170,13 +170,21 @@ body {
 .upload-col-right {
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
 }
 
 .upload-col-right .drop-card {
   flex: 1;
   display: flex;
   flex-direction: column;
+}
+
+.upload-col-right .drop-zone-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  min-height: 250px;
 }
 
 @media (max-width: 960px) {
